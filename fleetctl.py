@@ -329,7 +329,7 @@ def dns_route_menu():
         elif choice == "5": run_dns_check(node)
         elif choice == "6":
             sources = [r for r in dns_node_rows() if r["id"] != node["id"]]
-            if not sources: print("Нет другого узла с настройками DNS."); continue
+            if not sources: print("Нет другого узла для копирования."); continue
             for i, source in enumerate(sources, 1): print(f"{i}. {source['name']} — {source['host']}")
             try: idx = int(input("Копировать маршруты с узла: ")) - 1
             except ValueError: print("Введите номер."); continue
@@ -411,14 +411,14 @@ def run_dns_check(node):
     while time.time() < deadline:
         try:
             log = read_querylog(node, cfg["querylog_path"], "rvk-")
-            found = {q for _, _, q, sent in probes if sent and q in log}
+            found = {q for _, _, q, _sent in probes if q in log}
         except Exception as exc:
             print(f"Не удалось прочитать журнал AdGuard: {exc}"); return
-        if all((not sent) or q in found for _, _, q, sent in probes): break
+        if all(q in found for _, _, q, _sent in probes): break
         time.sleep(2)
     for route_index, route in enumerate(routes):
         related = [(q, sent) for idx, _, q, sent in probes if idx == route_index]
-        count = sum(1 for q, sent in related if sent and q in found)
+        count = sum(1 for q, _sent in related if q in found)
         print(f"{route['route_type']}: {count}/{route['probe_count']} — обнаружено в журнале AdGuard")
     total = len(probes); logged = len(found)
     print(f"Итого: {logged}/{total} проб обнаружено в журнале AdGuard. Ответ DNS сам по себе не засчитывается.")
