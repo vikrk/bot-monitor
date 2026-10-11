@@ -203,6 +203,29 @@ def add_node(kind):
         password = ""
 
 
+def register_main(name):
+    name = name.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,48}", name):
+        raise ValueError("Название должно содержать 1–48 латинских букв, цифр, точек, дефисов или подчёркиваний.")
+    host = socket.getfqdn() or socket.gethostname() or "localhost"
+    with connect() as db:
+        local = db.execute("SELECT id FROM nodes WHERE fingerprint='local' LIMIT 1").fetchone()
+        if local:
+            collision = db.execute("SELECT id FROM nodes WHERE name=? AND id<>?", (name, local["id"])).fetchone()
+            if collision:
+                raise ValueError(f"Имя «{name}» уже занято другим узлом.")
+            db.execute("UPDATE nodes SET name=?,host=?,user='local',kind='server',key_path='',enabled=1 WHERE id=?",
+                       (name, host, local["id"]))
+        else:
+            collision = db.execute("SELECT id FROM nodes WHERE name=?", (name,)).fetchone()
+            if collision:
+                raise ValueError(f"Имя «{name}» уже занято другим узлом.")
+            db.execute("INSERT INTO nodes(name,host,user,kind,key_path,fingerprint) VALUES(?,?,?,'server','','local')",
+                       (name, host, "local"))
+    audit("installer", name, "register_main", "local management server registered")
+    print(f"Основной сервер «{name}» добавлен в список узлов ({host}).")
+
+
 def set_interval():
     try: minutes = int(input("Интервал мониторинга в минутах (5–1440): "))
     except ValueError: print("Введите число."); return
@@ -217,7 +240,9 @@ def show_nodes():
     with connect() as db:
         rows = db.execute("SELECT name,kind,host,user,last_status,last_check FROM nodes ORDER BY name").fetchall()
     if not rows: print("Подключённых узлов пока нет.")
-    for r in rows: print(f"{r['name']} [{r['kind']}] {r['user']}@{r['host']} — {r['last_status'] or 'нет проверки'}")
+    for r in rows:
+        label = "основной сервер" if r["user"] == "local" else r["kind"]
+        print(f"{r['name']} [{label}] {r['user']}@{r['host']} — {r['last_status'] or 'нет проверки'}")
 
 
 def backup():
@@ -293,7 +318,8 @@ def main():
             "Установка на сервер — состав установки", "Подключение другого сервера", "Установка Telegram-бота",
             "Настройка времени мониторинга", "Подключение роутера по SSH", "Список серверов и роутеров",
             "Проверить узел сейчас", "Действия после подтверждения в Telegram", "Журнал действий",
-            "Резервная копия настроек и восстановление", "Управление доступом администратора", "Диагностика управляющего сервера", "Отключить сервер или роутер", "Выход"], 1):
+            "Резервная копия настроек и восстановление", "Управление доступом администратора", "Диагностика управляющего сервера", "Отключить сервер или роутер", "Выход",
+            "Задать имя основного сервера"], 1):
             print(f" {i:2}. {item}")
         choice = input("Выберите пункт: ").strip()
         if choice == "1":
@@ -323,8 +349,16 @@ def main():
             print("SSH:", shutil.which("ssh") or "не найден")
         elif choice == "13": revoke_node()
         elif choice == "14": return 0
+        elif choice == "15":
+            main_name = input("Название основного сервера: ").strip()
+            try: register_main(main_name)
+            except Exception as exc: print(f"Не удалось зарегистрировать основной сервер: {exc}")
         else: print("Нет такого пункта.")
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--register-main":
+        register_main(sys.argv[2])
+    else:
+        raise SystemExit(main())
 
