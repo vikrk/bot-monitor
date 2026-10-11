@@ -13,7 +13,7 @@ import urllib.request
 
 from storage import connect, audit, record_check
 from dns_monitor import DNS_ROUTE_DEFAULTS, check_dns_routes, validate_endpoint, validate_querylog_path
-from ai_diagnostics import analyze as ai_analyze, read_service_logs
+from ai_diagnostics import analyze as ai_analyze, configured as ai_configured, read_service_logs
 
 TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 OWNER = os.environ.get("BOT_CHAT_ID", "").strip()
@@ -68,6 +68,7 @@ def main_menu(chat, message_id=None):
     text = "<b>RVKOMI Server Manager</b>\nВыберите действие. Любое изменение требует отдельного подтверждения."
     keyboard = kb(
         [("Узлы", "nodes"), ("Проверить все", "check_all")],
+        [("ИИ-диагностика всех узлов", "ai_all")],
         [("DNS-маршруты", "dns_nodes")],
         [("Мониторинг", "monitor"), ("Журнал", "audit")],
         [("Резервная копия", "backup")],
@@ -250,22 +251,26 @@ def _dns_check_worker(chat, message_id, node_id):
         send(chat, text[:3900], kb([("К DNS-маршрутам", f"dns_menu:{node_id}")]))
 
 
+def _collect_ai_report(node_id):
+    node = load_node(node_id)
+    if not node:
+        raise RuntimeError("Узел не найден.")
+    status, details = check_node(node)
+    with connect() as db:
+        rows = db.execute("SELECT at,action,result FROM audit WHERE node=? ORDER BY id DESC LIMIT 50", (node["name"],)).fetchall()
+        checks = db.execute("SELECT at,check_type,status,details FROM monitor_results WHERE node_id=? ORDER BY id DESC LIMIT 50", (node_id,)).fetchall()
+    audit_rows = [f"{r['at']} {r['action']}: {r['result']}" for r in rows]
+    check_rows = [f"{r['at']} [{r['check_type']}] {r['status']}: {r['details']}" for r in checks]
+    logs = read_service_logs(node, run_ssh, sorted(DIAGNOSTIC_SERVICES))
+    report = ai_analyze(node["name"], f"Текущая SSH/disk проверка: {status}\n{details}", check_rows, audit_rows, logs)
+    audit(OWNER, node["name"], "ai_diagnosis", "analysis completed; no changes executed")
+    return node, report
+
+
 def _ai_diagnose_worker(chat, message_id, node_id):
     try:
-        node = load_node(node_id)
-        if not node:
-            text = "Узел не найден."
-        else:
-            status, details = check_node(node)
-            with connect() as db:
-                rows = db.execute("SELECT at,action,result FROM audit WHERE node=? ORDER BY id DESC LIMIT 50", (node["name"],)).fetchall()
-                checks = db.execute("SELECT at,check_type,status,details FROM monitor_results WHERE node_id=? ORDER BY id DESC LIMIT 50", (node_id,)).fetchall()
-            audit_rows = [f"{r['at']} {r['action']}: {r['result']}" for r in rows]
-            check_rows = [f"{r['at']} [{r['check_type']}] {r['status']}: {r['details']}" for r in checks]
-            logs = read_service_logs(node, run_ssh, sorted(DIAGNOSTIC_SERVICES))
-            report = ai_analyze(node["name"], f"Текущая SSH/disk проверка: {status}\n{details}", check_rows, audit_rows, logs)
-            audit(OWNER, node["name"], "ai_diagnosis", "analysis completed; no changes executed")
-            text = f"<b>ИИ-диагностика · {html.escape(node['name'])}</b>\n{html.escape(report)}\n\n<i>Только анализ и предложения. Исправления выполняются отдельно после подтверждения.</i>"
+        node, report = _collect_ai_report(node_id)
+        text = f"<b>ИИ-диагностика · {html.escape(node['name'])}</b>\n{html.escape(report)}\n\n<i>Только анализ и предложения. Исправления выполняются отдельно после подтверждения.</i>"
     except Exception as exc:
         text = f"<b>ИИ-диагностика не выполнена</b>\n{html.escape(str(exc)[:500])}"
     finally:
@@ -275,6 +280,27 @@ def _ai_diagnose_worker(chat, message_id, node_id):
         edit(chat, message_id, text[:3900], kb([("К узлу", f"node:{node_id}"), ("К узлам", "nodes")]))
     except Exception:
         send(chat, text[:3900], kb([("К узлу", f"node:{node_id}")]))
+
+
+def _ai_all_worker(chat, message_id, node_ids):
+    total = len(node_ids)
+    try:
+        for index, node_id in enumerate(node_ids, 1):
+            node = load_node(node_id)
+            label = node["name"] if node else f"узел {node_id}"
+            try:
+                node, report = _collect_ai_report(node_id)
+                body = f"<b>ИИ-диагностика · {html.escape(node['name'])}</b>\n{html.escape(report)}\n\n<i>Без исправлений; запуск изменений требует отдельного подтверждения.</i>"
+            except Exception as exc:
+                body = f"<b>ИИ-диагностика · {html.escape(label)}</b>\nНе выполнена: {html.escape(str(exc)[:500])}"
+            send(chat, body[:3900], kb([("К узлу", f"node:{node_id}"), ("К узлам", "nodes")]))
+            try:
+                edit(chat, message_id, f"ИИ-диагностика: завершено {index}/{total}. Последний узел: <b>{html.escape(label)}</b>.", kb([("Меню", "menu"), ("Узлы", "nodes")]))
+            except Exception:
+                pass
+    finally:
+        with AI_CHECKS_LOCK:
+            AI_CHECKS.discard((chat, -1))
 
 
 def _handle_text_input(chat, message):
@@ -354,11 +380,28 @@ def handle_callback(query):
     if data == "menu": main_menu(chat, mid)
     elif data == "nodes": nodes_menu(chat, mid)
     elif data == "dns_nodes": dns_nodes_menu(chat, mid)
+    elif data == "ai_all":
+        with connect() as db: ids = [r[0] for r in db.execute("SELECT id FROM nodes WHERE enabled=1 ORDER BY name")]
+        if not ai_configured():
+            edit(chat, mid, "ИИ не настроен. На управляющем сервере запусти <code>sudo fleetctl</code> → пункт 17 и задай API-ключ и модель.", kb([("Меню", "menu")]))
+        elif not ids:
+            edit(chat, mid, "Нет включённых узлов для диагностики.", kb([("Меню", "menu")]))
+        else:
+            with AI_CHECKS_LOCK:
+                busy = (chat, -1) in AI_CHECKS
+                if not busy: AI_CHECKS.add((chat, -1))
+            if busy:
+                edit(chat, mid, "ИИ-диагностика всех узлов уже выполняется.", kb([("Меню", "menu")]))
+            else:
+                edit(chat, mid, f"Запускаю диагностику всех узлов: {len(ids)}. Проверка обновит доступность и передаст ИИ последние результаты и журналы. Исправления не выполняются.", kb([("Меню", "menu")]))
+                threading.Thread(target=_ai_all_worker, args=(chat, mid, ids), daemon=True).start()
     elif data.startswith("ai_diag:"):
         try: node_id = int(data.split(":", 1)[1])
         except ValueError: node_id = -1
         node = load_node(node_id)
-        if not node:
+        if not ai_configured():
+            edit(chat, mid, "ИИ не настроен. На управляющем сервере запусти <code>sudo fleetctl</code> → пункт 17 и задай API-ключ и модель.", kb([("К узлам", "nodes")]))
+        elif not node:
             edit(chat, mid, "Узел не найден.", kb([("К узлам", "nodes")]))
         else:
             with AI_CHECKS_LOCK:
