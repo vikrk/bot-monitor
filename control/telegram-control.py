@@ -316,6 +316,8 @@ class Bot:
                 else:self.send(format_result(host,result))
             except Exception:self.send('⚠️ '+host+': не удалось выполнить запрос. Это не подтверждает остановку сервера; проверь доступность и журнал.')
     def run_ai_all(self):
+        try:ai_diagnostics.load_config()
+        except Exception as exc:self.send('⚠️ '+str(exc));return
         self.send('🧠 Получаю свежие проверки всех серверов и состояние домашнего роутера для ИИ-анализа. Исправления не запускаются.')
         checks={}
         for host in AI_HOSTS:

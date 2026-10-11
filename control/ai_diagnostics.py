@@ -7,7 +7,7 @@ import urllib.parse
 import urllib.request
 
 CONFIG = "/etc/rvkomi-watchdog/ai.json"
-MAX_INPUT = 18000
+MAX_INPUT = 22000
 MAX_OUTPUT = 3500
 SECRET_PATTERNS = (
     re.compile(r"(?i)Bearer\s+[A-Za-z0-9._~+/-]+=*"),
@@ -23,7 +23,7 @@ def redact(value):
     for pattern in SECRET_PATTERNS:
         text = pattern.sub(lambda m: (m.group(1) + m.group(2) + "[REDACTED]")
                            if m.lastindex and m.lastindex >= 2 else "[REDACTED]", text)
-    return text[-MAX_INPUT:]
+    return text[:MAX_INPUT]
 
 
 def load_config():
@@ -48,10 +48,19 @@ def analyze(checks, history, router, logs):
     compact_checks = {}
     for name, result in checks.items():
         encoded = json.dumps(result, ensure_ascii=False)
-        compact_checks[name] = result if len(encoded) <= 3500 else {
-            "truncated": True, "summary": encoded[:1600] + " ... " + encoded[-1000:]
+        compact_checks[name] = result if len(encoded) <= 2000 else {
+            "truncated": True, "summary": encoded[:1100] + " ... " + encoded[-500:]
         }
-    compact_history = history[-80:]
+    compact_history = []
+    for row in history[-12:]:
+        services = row.get("services", {})
+        compact_history.append({
+            "time": row.get("t"), "node": row.get("h"), "source": row.get("source"),
+            "failures": row.get("failures", [])[:20], "skipped": row.get("skipped"),
+            "services": {str(k): str(v)[:24] for k, v in list(services.items())[:20]},
+        })
+    router_text = json.dumps(router, ensure_ascii=False)
+    compact_router = router if len(router_text) <= 1800 else {"truncated": True, "summary": router_text[:1300]}
     payload = {
         "model": model,
         "temperature": 0.2,
@@ -67,8 +76,8 @@ def analyze(checks, history, router, logs):
             {"role": "user", "content": redact(json.dumps({
                 "fresh_checks_for_all_nodes": compact_checks,
                 "recent_check_and_action_history": compact_history,
-                "home_router_state": router,
-                "controller_service_logs": str(logs)[-6000:],
+                "home_router_state": compact_router,
+                "controller_service_logs": str(logs)[-2500:],
             }, ensure_ascii=False)[:MAX_INPUT])},
         ],
     }
