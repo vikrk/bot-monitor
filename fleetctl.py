@@ -205,8 +205,8 @@ def add_node(kind):
 
 def register_main(name):
     name = name.strip()
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,48}", name):
-        raise ValueError("Название должно содержать 1–48 латинских букв, цифр, точек, дефисов или подчёркиваний.")
+    if not re.fullmatch(r"[\w.-]{1,48}", name):
+        raise ValueError("Название должно содержать 1–48 букв, цифр, точек, дефисов или подчёркиваний.")
     host = socket.getfqdn() or socket.gethostname() or "localhost"
     with connect() as db:
         local = db.execute("SELECT id FROM nodes WHERE fingerprint='local' LIMIT 1").fetchone()
