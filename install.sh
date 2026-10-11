@@ -18,6 +18,7 @@ apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip openssh-client ca-certificates sudo
 getent group rvkomi-manager >/dev/null || groupadd --system rvkomi-manager
 id -u rvkomi-manager >/dev/null 2>&1 || useradd --system --gid rvkomi-manager --home-dir "$STATE" --create-home --shell /usr/sbin/nologin rvkomi-manager
+if getent group systemd-journal >/dev/null; then usermod -a -G systemd-journal rvkomi-manager; fi
 install -d -o root -g rvkomi-manager -m 0750 "$BASE" "$ETC"
 install -d -o rvkomi-manager -g rvkomi-manager -m 0700 "$STATE" "$STATE/ssh"
 cp -a "$(cd "$(dirname "$0")" && pwd)/." "$BASE/"
@@ -31,13 +32,13 @@ install -o root -g rvkomi-manager -m 0640 "$BASE/rvkomi-server-manager.service" 
 if [ ! -e "$ETC/bot.env" ]; then install -o root -g rvkomi-manager -m 0640 /dev/null "$ETC/bot.env"; fi
 if [ ! -e "$ETC/manager.json" ]; then
 cat > "$ETC/manager.json" <<'JSON'
-{"monitor_interval_minutes": 15, "allowed_restart_services": ["ssh", "nginx", "docker", "telemt", "gotelegram-bot", "gokaskad"]}
+{"monitor_interval_minutes": 15, "allowed_restart_services": ["ssh", "nginx", "docker", "gokaskad", "rvkomi-server-manager", "AdGuardHome", "kaskad-egress", "kaskad-bot", "kaskad-monitor"]}
 JSON
 fi
 chown root:rvkomi-manager "$ETC/manager.json"
 chmod 0640 "$ETC/manager.json"
 cat > /etc/sudoers.d/rvkomi-server-manager <<'SUDOERS'
-rvkomi-manager ALL=(root) NOPASSWD: /usr/bin/systemctl restart ssh, /usr/bin/systemctl restart nginx, /usr/bin/systemctl restart docker, /usr/bin/systemctl restart telemt, /usr/bin/systemctl restart gotelegram-bot, /usr/bin/systemctl restart gokaskad
+rvkomi-manager ALL=(root) NOPASSWD: /usr/bin/systemctl restart ssh, /usr/bin/systemctl restart nginx, /usr/bin/systemctl restart docker, /usr/bin/systemctl restart gokaskad, /usr/bin/systemctl restart rvkomi-server-manager, /usr/bin/systemctl restart AdGuardHome, /usr/bin/systemctl restart kaskad-egress, /usr/bin/systemctl restart kaskad-bot, /usr/bin/systemctl restart kaskad-monitor
 SUDOERS
 chmod 0440 /etc/sudoers.d/rvkomi-server-manager
 visudo -cf /etc/sudoers.d/rvkomi-server-manager
@@ -51,4 +52,3 @@ else
     echo "Установка завершена. Основной сервер зарегистрирован. Для Telegram-управления запустите sudo fleetctl и выберите пункт 3."
 fi
 echo "Администрирование: sudo fleetctl"
-
