@@ -13,6 +13,10 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import secrets
+import ssl
+import struct
+import time
 
 ROOT = "/etc/rvkomi-server-manager"
 STATE = "/var/lib/rvkomi-server-manager"
@@ -244,6 +248,183 @@ def show_nodes():
         print(f"{r['name']} [{label}] {r['user']}@{r['host']} — {r['last_status'] or 'нет проверки'}")
 
 
+DNS_ROUTE_DEFAULTS = {
+    "DoH-origin": ("doh", 1), "DoH-CDN": ("doh", 1),
+    "DoT": ("dot", 1), "DNS-relay-DoH": ("doh", 16),
+    "DNS-relay-DoT": ("dot", 4), "AdGuard DoH": ("doh", 16),
+    "AdGuard DoT": ("dot", 4),
+}
+
+
+def dns_node_rows():
+    with connect() as db:
+        return db.execute("SELECT id,name,host,user,kind,key_path,fingerprint,enabled FROM nodes WHERE enabled=1 ORDER BY name").fetchall()
+
+
+def choose_node(prompt="Выберите узел: "):
+    rows = dns_node_rows()
+    if not rows:
+        print("Нет подключённых узлов."); return None
+    for i, row in enumerate(rows, 1): print(f"{i}. {row['name']} — {row['host']}")
+    try: idx = int(input(prompt)) - 1
+    except ValueError: print("Введите номер."); return None
+    if not 0 <= idx < len(rows): print("Нет такого номера."); return None
+    return rows[idx]
+
+
+def dns_route_menu():
+    node = choose_node("Узел для DNS-маршрутов: ")
+    if not node: return
+    while True:
+        print(f"\nDNS-маршруты узла «{node['name']}»")
+        print("1. Добавить маршрут\n2. Список маршрутов\n3. Удалить маршрут\n4. Путь к журналу AdGuard\n5. Проверить маршруты сейчас\n6. Скопировать шаблон с другого узла\n0. Назад")
+        choice = input("Выбор: ").strip()
+        if choice == "0": return
+        if choice == "1":
+            kinds = list(DNS_ROUTE_DEFAULTS)
+            for i, kind in enumerate(kinds, 1):
+                proto, count = DNS_ROUTE_DEFAULTS[kind]
+                print(f"{i}. {kind} ({proto.upper()}, {count} проб по умолчанию)")
+            try: idx = int(input("Тип маршрута: ")) - 1
+            except ValueError: print("Введите номер."); continue
+            if not 0 <= idx < len(kinds): print("Нет такого типа."); continue
+            kind = kinds[idx]; proto, default_count = DNS_ROUTE_DEFAULTS[kind]
+            endpoint = input("URL DoH (https://host/dns-query) или адрес DoT (host:853): ").strip()
+            try:
+                parsed = urllib.parse.urlsplit(endpoint if proto == "doh" else "tls://" + endpoint)
+                if proto == "doh":
+                    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                        raise ValueError("Нужен HTTPS URL без логина, пароля и query-параметров.")
+                elif parsed.scheme != "tls" or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+                    raise ValueError("Нужен адрес host:port для DoT.")
+                count_raw = input(f"Число проб [{default_count}]: ").strip()
+                count = int(count_raw or default_count)
+                if not 1 <= count <= 64: raise ValueError("Число проб должно быть от 1 до 64.")
+            except Exception as exc: print(f"Параметры не приняты: {exc}"); continue
+            with connect() as db:
+                db.execute("INSERT INTO dns_routes(node_id,route_type,endpoint,probe_count) VALUES(?,?,?,?) ON CONFLICT(node_id,route_type,endpoint) DO UPDATE SET probe_count=excluded.probe_count,enabled=1", (node["id"], kind, endpoint, count))
+            audit("local-admin", node["name"], "dns_route_add", f"{kind}: {count} probes")
+            print("Маршрут сохранён.")
+        elif choice == "2":
+            with connect() as db:
+                routes = db.execute("SELECT id,route_type,endpoint,probe_count FROM dns_routes WHERE node_id=? AND enabled=1 ORDER BY route_type,id", (node["id"],)).fetchall()
+                cfg = db.execute("SELECT querylog_path FROM dns_node_config WHERE node_id=?", (node["id"],)).fetchone()
+            if not routes: print("Маршруты ещё не заданы.")
+            for route in routes: print(f"{route['id']}. {route['route_type']} — {route['endpoint']} ({route['probe_count']} проб)")
+            print("Журнал AdGuard:", cfg["querylog_path"] if cfg else "не задан")
+        elif choice == "3":
+            with connect() as db: routes = db.execute("SELECT id,route_type,endpoint FROM dns_routes WHERE node_id=? AND enabled=1 ORDER BY id", (node["id"],)).fetchall()
+            if not routes: print("Маршрутов нет."); continue
+            for route in routes: print(f"{route['id']}. {route['route_type']} — {route['endpoint']}")
+            try: rid = int(input("ID маршрута: "))
+            except ValueError: print("Введите ID."); continue
+            with connect() as db: cur = db.execute("DELETE FROM dns_routes WHERE id=? AND node_id=?", (rid, node["id"]))
+            print("Удалено." if cur.rowcount else "Маршрут не найден.")
+        elif choice == "4":
+            path = input("Абсолютный путь к querylog.json на узле AdGuard: ").strip()
+            if not path.startswith("/") or "\n" in path or "\r" in path: print("Укажите абсолютный Linux-путь."); continue
+            with connect() as db: db.execute("INSERT INTO dns_node_config(node_id,querylog_path) VALUES(?,?) ON CONFLICT(node_id) DO UPDATE SET querylog_path=excluded.querylog_path", (node["id"], path))
+            audit("local-admin", node["name"], "dns_querylog_set", path)
+            print("Путь сохранён. Убедитесь, что файл доступен SSH-пользователю для чтения.")
+        elif choice == "5": run_dns_check(node)
+        elif choice == "6":
+            sources = [r for r in dns_node_rows() if r["id"] != node["id"]]
+            if not sources: print("Нет другого узла с настройками DNS."); continue
+            for i, source in enumerate(sources, 1): print(f"{i}. {source['name']} — {source['host']}")
+            try: idx = int(input("Копировать маршруты с узла: ")) - 1
+            except ValueError: print("Введите номер."); continue
+            if not 0 <= idx < len(sources): print("Нет такого номера."); continue
+            source = sources[idx]
+            with connect() as db:
+                source_routes = db.execute("SELECT route_type,endpoint,probe_count FROM dns_routes WHERE node_id=? AND enabled=1", (source["id"],)).fetchall()
+                for route in source_routes:
+                    db.execute("INSERT INTO dns_routes(node_id,route_type,endpoint,probe_count) VALUES(?,?,?,?) ON CONFLICT(node_id,route_type,endpoint) DO UPDATE SET probe_count=excluded.probe_count,enabled=1", (node["id"], route["route_type"], route["endpoint"], route["probe_count"]))
+            audit("local-admin", node["name"], "dns_routes_clone", f"copied {len(source_routes)} routes from {source['name']}")
+            print(f"Скопировано маршрутов: {len(source_routes)}. Проверьте endpoints и задайте путь к журналу AdGuard на целевом узле.")
+        else: print("Нет такого пункта.")
+
+
+def dns_packet(qname):
+    labels = qname.rstrip(".").split(".")
+    q = b"".join(bytes([len(x)]) + x.encode("ascii") for x in labels) + b"\0" + struct.pack("!HH", 1, 1)
+    return struct.pack("!HHHHHH", secrets.randbelow(65536), 0x0100, 1, 0, 0, 0) + q
+
+
+def send_dns_probe(endpoint, proto, qname):
+    packet = dns_packet(qname)
+    if proto == "doh":
+        req = urllib.request.Request(endpoint, data=packet, headers={"Content-Type": "application/dns-message", "Accept": "application/dns-message"}, method="POST")
+        with urllib.request.urlopen(req, timeout=8, context=ssl.create_default_context()) as response:
+            response.read(4096)
+    else:
+        parsed = urllib.parse.urlsplit("tls://" + endpoint)
+        host, port = parsed.hostname, parsed.port or 853
+        ctx = ssl.create_default_context()
+        with socket.create_connection((host, port), timeout=8) as raw:
+            with ctx.wrap_socket(raw, server_hostname=host) as conn:
+                conn.sendall(struct.pack("!H", len(packet)) + packet)
+                head = conn.recv(2)
+                if len(head) != 2: raise OSError("не получен DNS-ответ по DoT")
+                size = struct.unpack("!H", head)[0]
+                remaining = size
+                while remaining:
+                    chunk = conn.recv(remaining)
+                    if not chunk: raise OSError("оборван DNS-ответ по DoT")
+                    remaining -= len(chunk)
+
+
+def read_querylog(node, path, marker):
+    if node["fingerprint"] == "local":
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(max(0, os.path.getsize(path) - 8 * 1024 * 1024)); return f.read()
+    try: import paramiko
+    except ImportError as exc: raise RuntimeError("Paramiko не установлен") from exc
+    if not re.fullmatch(r"/[A-Za-z0-9_./-]{1,240}", path): raise ValueError("Недопустимый путь журнала")
+    client = paramiko.SSHClient(); client.load_host_keys(os.path.join(SSH_DIR, "known_hosts")); client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    try:
+        client.connect(node["host"], username=node["user"], key_filename=node["key_path"], timeout=10, look_for_keys=False, allow_agent=False)
+        # Path has a strict character allowlist; tail reads a bounded recent window.
+        _, stdout, stderr = client.exec_command("tail -c 8388608 -- " + path, timeout=12)
+        data = stdout.read().decode("utf-8", "replace")
+        status = stdout.channel.recv_exit_status()
+        if status: raise RuntimeError(stderr.read().decode("utf-8", "replace")[:300] or "не удалось прочитать query log")
+        return data
+    finally: client.close()
+
+
+def run_dns_check(node):
+    with connect() as db:
+        routes = db.execute("SELECT route_type,endpoint,probe_count FROM dns_routes WHERE node_id=? AND enabled=1 ORDER BY id", (node["id"],)).fetchall()
+        cfg = db.execute("SELECT querylog_path FROM dns_node_config WHERE node_id=?", (node["id"],)).fetchone()
+    if not routes: print("Для узла не настроены DNS-маршруты."); return
+    if not cfg or not cfg["querylog_path"]: print("Сначала задайте путь к журналу AdGuard в DNS-меню."); return
+    probes = []
+    for route_index, route in enumerate(routes):
+        proto = DNS_ROUTE_DEFAULTS.get(route["route_type"], ("doh", 1))[0]
+        for _ in range(route["probe_count"]):
+            qname = "rvk-" + secrets.token_hex(12) + ".example.org"
+            try: send_dns_probe(route["endpoint"], proto, qname); sent = True
+            except Exception as exc:
+                sent = False; print(f"{route['route_type']}: отправка не удалась ({type(exc).__name__}: {exc})")
+            probes.append((route_index, route["route_type"], qname, sent))
+    found = set(); deadline = time.time() + 25
+    while time.time() < deadline:
+        try:
+            log = read_querylog(node, cfg["querylog_path"], "rvk-")
+            found = {q for _, _, q, sent in probes if sent and q in log}
+        except Exception as exc:
+            print(f"Не удалось прочитать журнал AdGuard: {exc}"); return
+        if all((not sent) or q in found for _, _, q, sent in probes): break
+        time.sleep(2)
+    for route_index, route in enumerate(routes):
+        related = [(q, sent) for idx, _, q, sent in probes if idx == route_index]
+        count = sum(1 for q, sent in related if sent and q in found)
+        print(f"{route['route_type']}: {count}/{route['probe_count']} — обнаружено в журнале AdGuard")
+    total = len(probes); logged = len(found)
+    print(f"Итого: {logged}/{total} проб обнаружено в журнале AdGuard. Ответ DNS сам по себе не засчитывается.")
+    audit("local-admin", node["name"], "dns_route_check", f"{logged}/{total} probes logged")
+
+
 def backup():
     import datetime
     with connect() as db:
@@ -318,7 +499,7 @@ def main():
             "Настройка времени мониторинга", "Подключение роутера по SSH", "Список серверов и роутеров",
             "Проверить узел сейчас", "Действия после подтверждения в Telegram", "Журнал действий",
             "Резервная копия настроек и восстановление", "Управление доступом администратора", "Диагностика управляющего сервера", "Отключить сервер или роутер", "Выход",
-            "Задать имя основного сервера"], 1):
+            "Задать имя основного сервера", "DNS-маршруты: добавить и проверить"], 1):
             print(f" {i:2}. {item}")
         choice = input("Выберите пункт: ").strip()
         if choice == "1":
@@ -352,6 +533,7 @@ def main():
             main_name = input("Название основного сервера: ").strip()
             try: register_main(main_name)
             except Exception as exc: print(f"Не удалось зарегистрировать основной сервер: {exc}")
+        elif choice == "16": dns_route_menu()
         else: print("Нет такого пункта.")
 
 
@@ -360,4 +542,3 @@ if __name__ == "__main__":
         register_main(sys.argv[2])
     else:
         raise SystemExit(main())
-
