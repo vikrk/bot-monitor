@@ -16,6 +16,10 @@ SECRET_PATTERNS = [
 ]
 
 
+def configured():
+    return bool(os.environ.get("AI_API_KEY", "").strip() and os.environ.get("AI_MODEL", "").strip())
+
+
 def redact(value):
     text = str(value)
     for pattern in SECRET_PATTERNS:
