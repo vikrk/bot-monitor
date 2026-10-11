@@ -18,7 +18,7 @@ cp -a "$(cd "$(dirname "$0")" && pwd)/." "$BASE/"
 python3 -m venv "$BASE/venv"
 "$BASE/venv/bin/pip" install --disable-pip-version-check -r "$BASE/requirements.txt"
 chown -R root:rvkomi-manager "$BASE"
-chmod -R o-rwx "$BASE"
+chmod -R u=rwX,g=rX,o= "$BASE"
 chmod 0750 "$BASE/fleetctl.py"
 ln -sf "$BASE/fleetctl.py" /usr/local/bin/fleetctl
 install -o root -g rvkomi-manager -m 0640 "$BASE/rvkomi-server-manager.service" /etc/systemd/system/rvkomi-server-manager.service
