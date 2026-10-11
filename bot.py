@@ -1,8 +1,10 @@
+Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 """Minimal Telegram controller with one owner Chat ID and explicit approvals."""
 import datetime
 import html
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import time
@@ -67,12 +69,12 @@ def main_menu(chat, message_id=None):
 
 def nodes_menu(chat, message_id=None):
     with connect() as db:
-        rows = db.execute("SELECT id,name,kind,host,last_status FROM nodes WHERE enabled=1 ORDER BY name").fetchall()
+        rows = db.execute("SELECT id,name,kind,fingerprint,last_status FROM nodes WHERE enabled=1 ORDER BY name").fetchall()
     if not rows:
         text, keyboard = "Подключённых узлов нет. Добавьте сервер или роутер в терминальном меню fleetctl.", kb([("Назад", "menu")])
     else:
         text = "<b>Серверы и роутеры</b>\nНажмите узел для проверки и разрешённых действий."
-        buttons = [[{"text": f"{r['name']} · {r['last_status'] or 'не проверен'}", "callback_data": f"node:{r['id']}"}] for r in rows]
+        buttons = [[{"text": f"{r['name']} · {'основной · ' if r['fingerprint'] == 'local' else ''}{r['last_status'] or 'не проверен'}", "callback_data": f"node:{r['id']}"}] for r in rows]
         buttons.append([{"text": "Назад", "callback_data": "menu"}])
         keyboard = buttons
     if message_id: edit(chat, message_id, text, keyboard)
@@ -80,6 +82,20 @@ def nodes_menu(chat, message_id=None):
 
 
 def run_ssh(node, remote_command, timeout=15):
+    if node["fingerprint"] == "local":
+        if remote_command == "uptime":
+            cmd = ["/usr/bin/uptime"]
+        elif remote_command == "df -P /":
+            cmd = ["/usr/bin/df", "-P", "/"]
+        else:
+            match = re.fullmatch(r"(?:sudo -n )?systemctl restart ([A-Za-z0-9@_.-]+)", remote_command)
+            if not match or match.group(1) not in SERVICE_ALLOWLIST:
+                return subprocess.CompletedProcess([], 2, "", "Local command is not allowed")
+            cmd = ["/usr/bin/sudo", "-n", "/usr/bin/systemctl", "restart", match.group(1)]
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        except subprocess.TimeoutExpired as exc:
+            return subprocess.CompletedProcess(cmd, 124, exc.stdout or "", exc.stderr or "Command timeout")
     host = node["host"]
     user = node["user"]
     key = node["key_path"]
@@ -124,7 +140,8 @@ def node_card(chat, message_id, node_id):
     if not node:
         edit(chat, message_id, "Узел не найден.", kb([("Назад", "nodes")]))
         return
-    text = f"<b>{html.escape(node['name'])}</b> ({node['kind']})\n<code>{html.escape(node['user'])}@{html.escape(node['host'])}</code>\nПоследняя проверка: {html.escape(node['last_status'] or 'нет данных')}"
+    role = "основной сервер" if node["fingerprint"] == "local" else node["kind"]
+    text = f"<b>{html.escape(node['name'])}</b> ({role})\n<code>{html.escape(node['user'])}@{html.escape(node['host'])}</code>\nПоследняя проверка: {html.escape(node['last_status'] or 'нет данных')}"
     rows = [[("Проверить", f"check:{node_id}")], [("Предложить перезапуск службы", f"restart_menu:{node_id}")], [("Назад", "nodes")]]
     edit(chat, message_id, text, kb(*rows))
 
@@ -274,3 +291,4 @@ def main():
 
 
 if __name__ == "__main__": main()
+
