@@ -9,9 +9,9 @@
 На Ubuntu/Debian:
 
 ```bash
-curl -fsSL -o hosts.tar.gz https://github.com/vikrk/hosts/archive/refs/heads/master.tar.gz
-tar -xzf hosts.tar.gz
-cd hosts-master
+curl -fsSL -o bot-monitor.tar.gz https://github.com/vikrk/bot-monitor/archive/refs/heads/master.tar.gz
+tar -xzf bot-monitor.tar.gz
+cd bot-monitor-master
 sudo bash install.sh
 ```
 
@@ -78,3 +78,4 @@ sudo rvkomi-control-verify
 Экспорт/импорт зашифрованной runtime-копии — отдельные пункты `fleetctl`. Они нужны для отката или переноса уже настроенной инфраструктуры, а не для обычной установки. Архив содержит ваши настройки бота, профили и закрытые SSH-ключи. При смене исходящего IP после переноса подключитесь заново через пункт изменения доступа: ключи на узлах ограничены прежним IP.
 
 При явном импорте старой копии можно добавить её прежние списки как legacy-агенты с существующими проверками. Эти списки не используются при обычной чистой установке. `GoTelegram`/MTProxy и `GoInstaller` не входят в состав устанавливаемых служб. Пункт 2 корневого установщика сохранён как старый отдельный Server Manager; описанный сценарий использует пункт 1.
+
