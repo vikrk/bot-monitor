@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 #!/opt/rvkomi-server-manager/venv/bin/python
 """Interactive setup and administration for RVKOMI Server Manager."""
 import getpass
