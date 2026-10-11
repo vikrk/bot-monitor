@@ -10,7 +10,9 @@ GoTelegram/MTProxy сюда не входят и не изменяются. То
 На Ubuntu 22.04/24.04:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vikrk/hosts/master/install.sh -o install.sh
+curl -fsSL -o hosts.tar.gz https://github.com/vikrk/hosts/archive/refs/heads/master.tar.gz
+tar -xzf hosts.tar.gz
+cd hosts-master
 sudo bash install.sh
 ```
 
