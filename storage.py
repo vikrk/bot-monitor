@@ -33,6 +33,11 @@ def connect():
         enabled INTEGER NOT NULL DEFAULT 1,
         UNIQUE(node_id, route_type, endpoint)
       );
+      CREATE TABLE IF NOT EXISTS monitor_results (
+        id INTEGER PRIMARY KEY, at TEXT NOT NULL DEFAULT (datetime('now')),
+        node_id INTEGER NOT NULL, check_type TEXT NOT NULL, status TEXT NOT NULL,
+        details TEXT NOT NULL DEFAULT ''
+      );
         """)
         yield db
         db.commit()
@@ -47,4 +52,10 @@ def audit(actor, node, action, result):
     with connect() as db:
         db.execute("INSERT INTO audit(actor,node,action,result) VALUES(?,?,?,?)",
                    (str(actor), node, action, result))
+
+
+def record_check(node_id, check_type, status, details):
+    with connect() as db:
+        db.execute("INSERT INTO monitor_results(node_id,check_type,status,details) VALUES(?,?,?,?)",
+                   (int(node_id), str(check_type)[:80], str(status)[:80], str(details)[:12000]))
 
