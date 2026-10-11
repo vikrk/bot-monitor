@@ -24,6 +24,15 @@ def connect():
         id INTEGER PRIMARY KEY, at TEXT NOT NULL DEFAULT (datetime('now')),
         actor TEXT NOT NULL, node TEXT, action TEXT NOT NULL, result TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS dns_node_config (
+        node_id INTEGER PRIMARY KEY, querylog_path TEXT NOT NULL DEFAULT ''
+      );
+      CREATE TABLE IF NOT EXISTS dns_routes (
+        id INTEGER PRIMARY KEY, node_id INTEGER NOT NULL, route_type TEXT NOT NULL,
+        endpoint TEXT NOT NULL, probe_count INTEGER NOT NULL DEFAULT 1,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        UNIQUE(node_id, route_type, endpoint)
+      );
         """)
         yield db
         db.commit()
