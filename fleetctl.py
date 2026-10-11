@@ -1,3 +1,4 @@
+Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 #!/opt/rvkomi-server-manager/venv/bin/python
 """Interactive setup and administration for RVKOMI Server Manager."""
 import getpass
@@ -145,7 +146,7 @@ def add_node(kind):
             print("SSH не подтвердил пароль."); transport.close(); password = ""; return
         channel = transport.open_session(timeout=8)
         channel.exec_command("printf '%s\\n' \"$HOME\"")
-        home = channel.makefile("r").read().strip()
+        home = channel.makefile("r").read().decode("utf-8", "strict").strip()
         channel.recv_exit_status()
         channel.close()
         if not home.startswith("/") or "\n" in home:
@@ -326,3 +327,4 @@ def main():
 
 
 if __name__ == "__main__": raise SystemExit(main())
+
