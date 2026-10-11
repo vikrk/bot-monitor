@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 # RVKOMI Server Manager
 
 Отдельный управляющий проект для серверов и SSH-роутеров. Исходники GoInstaller и GoTelegram не входят в проект и не изменяются.
