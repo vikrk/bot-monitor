@@ -1,0 +1,28 @@
+Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
+[Unit]
+Description=RVKOMI Server Manager Telegram bot and monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rvkomi-manager
+Group=rvkomi-manager
+WorkingDirectory=/opt/rvkomi-server-manager
+EnvironmentFile=/etc/rvkomi-server-manager/bot.env
+Environment=RVKOMI_MANAGER_DB=/var/lib/rvkomi-server-manager/manager.sqlite3
+Environment=RVKOMI_MANAGER_CONFIG=/etc/rvkomi-server-manager/manager.json
+Environment=RVKOMI_MANAGER_SSH_DIR=/var/lib/rvkomi-server-manager/ssh
+ExecStart=/opt/rvkomi-server-manager/venv/bin/python /opt/rvkomi-server-manager/bot.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/rvkomi-server-manager
+
+[Install]
+WantedBy=multi-user.target
+
