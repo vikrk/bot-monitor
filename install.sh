@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -31,4 +30,3 @@ chown root:rvkomi-manager "$ETC/manager.json"
 chmod 0640 "$ETC/manager.json"
 systemctl daemon-reload
 echo "Installed. Run: sudo fleetctl"
-

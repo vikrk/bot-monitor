@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 """Minimal Telegram controller with one owner Chat ID and explicit approvals."""
 import datetime
 import html
@@ -275,4 +274,3 @@ def main():
 
 
 if __name__ == "__main__": main()
-

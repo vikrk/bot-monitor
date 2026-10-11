@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 # Описание репозитория
 
 Короткое описание для GitHub:
@@ -6,4 +5,3 @@ Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' 
 > Самостоятельный менеджер серверов и SSH-роутеров: Telegram-мониторинг, ограниченные подтверждаемые действия, безопасная установка SSH-ключей, журнал и резервное копирование. Не изменяет GoInstaller и GoTelegram.
 
 Длинное описание находится в [README.md](README.md).
-

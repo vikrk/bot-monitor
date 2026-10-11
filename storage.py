@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 """Small local inventory and audit log for the independent manager."""
 import os
 import sqlite3
@@ -39,5 +38,4 @@ def audit(actor, node, action, result):
     with connect() as db:
         db.execute("INSERT INTO audit(actor,node,action,result) VALUES(?,?,?,?)",
                    (str(actor), node, action, result))
-
 
