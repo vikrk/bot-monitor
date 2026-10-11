@@ -1,0 +1,11 @@
+Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
+[Unit]
+Description=Certificate warnings daily at 09:00 Moscow
+[Timer]
+OnCalendar=*-*-* 09:00:00 Europe/Moscow
+Persistent=true
+AccuracySec=1min
+Unit=rvkomi-certificates.service
+[Install]
+WantedBy=timers.target
+

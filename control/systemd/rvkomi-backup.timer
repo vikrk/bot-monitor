@@ -1,0 +1,12 @@
+Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
+[Unit]
+Description=Encrypted backups daily at 04:00 Moscow
+[Timer]
+OnCalendar=*-*-* 04:00:00 Europe/Moscow
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=0
+Unit=rvkomi-backup.service
+[Install]
+WantedBy=timers.target
+

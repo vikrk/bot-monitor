@@ -1,0 +1,20 @@
+Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
+[Unit]
+Description=Read-only DNS WWW SPACE LATVIA FIN TELEGRAM monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/lib/rvkomi-watchdog/extra-monitor.py
+TimeoutStartSec=220
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+StateDirectory=rvkomi-watchdog
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/rvkomi-watchdog
+

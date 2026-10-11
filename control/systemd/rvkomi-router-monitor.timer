@@ -1,0 +1,10 @@
+Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
+[Unit]
+Description=Check router heartbeat every five minutes
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=300s
+AccuracySec=10s
+[Install]
+WantedBy=timers.target
+
