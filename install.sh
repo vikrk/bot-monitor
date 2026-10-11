@@ -10,8 +10,8 @@ SERVICE=rvkomi-server-manager
 if [ "$(id -u)" -ne 0 ]; then echo "Run as root: sudo bash install.sh" >&2; exit 1; fi
 if ! grep -qiE 'ubuntu|debian' /etc/os-release; then echo "Ubuntu/Debian required" >&2; exit 1; fi
 read -r -p "Название основного сервера: " MANAGER_NAME
-if [[ ! "$MANAGER_NAME" =~ ^[A-Za-z0-9_.-]{1,48}$ ]]; then
-    echo "Название должно содержать 1–48 латинских букв, цифр, точек, дефисов или подчёркиваний." >&2
+if ! python3 -c 'import re,sys; sys.exit(0 if re.fullmatch(r"[\w.-]{1,48}", sys.argv[1]) else 1)' "$MANAGER_NAME"; then
+    echo "Название должно содержать 1–48 букв, цифр, точек, дефисов или подчёркиваний." >&2
     exit 1
 fi
 systemctl stop "$SERVICE.service" 2>/dev/null || true
