@@ -14,6 +14,7 @@ if [[ ! "$MANAGER_NAME" =~ ^[A-Za-z0-9_.-]{1,48}$ ]]; then
     echo "Название должно содержать 1–48 латинских букв, цифр, точек, дефисов или подчёркиваний." >&2
     exit 1
 fi
+systemctl stop "$SERVICE.service" 2>/dev/null || true
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip openssh-client ca-certificates sudo
 getent group rvkomi-manager >/dev/null || groupadd --system rvkomi-manager
