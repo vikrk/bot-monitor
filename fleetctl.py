@@ -280,8 +280,8 @@ def restore_backup():
 
 def revoke_node():
     import paramiko
-    with connect() as db: rows = db.execute("SELECT id,name,host,user,key_path FROM nodes WHERE enabled=1 ORDER BY name").fetchall()
-    if not rows: print("Активных узлов нет."); return
+    with connect() as db: rows = db.execute("SELECT id,name,host,user,key_path FROM nodes WHERE enabled=1 AND fingerprint<>'local' ORDER BY name").fetchall()
+    if not rows: print("Активных подключённых узлов нет. Основной сервер переименовывается через пункт 15."); return
     for i, row in enumerate(rows, 1): print(f"{i}. {row['name']} — {row['user']}@{row['host']}")
     try: selected = int(input("Номер узла для отключения: ")) - 1
     except ValueError: print("Введите номер."); return
