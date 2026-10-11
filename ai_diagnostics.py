@@ -9,10 +9,12 @@ import urllib.request
 MAX_LOG_CHARS = 24000
 MAX_RESPONSE_CHARS = 3500
 SECRET_PATTERNS = [
-    re.compile(r"(?i)(token|api[_-]?key|password|passwd|authorization)(\s*[=:]\s*)\S+"),
     re.compile(r"(?i)Bearer\s+[A-Za-z0-9._~+/-]+=*"),
+    re.compile(r"(?i)(token|api[_-]?key|password|passwd|authorization)(\s*[=:]\s*)(?:Bearer\s+)?\S+"),
+    re.compile(r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----"),
     re.compile(r"\b\d{5,15}:[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"\b(?:sk|ghp|github_pat)-[A-Za-z0-9_-]{12,}\b"),
+    re.compile(r"\bgsk_[A-Za-z0-9_-]{16,}\b"),
 ]
 
 
