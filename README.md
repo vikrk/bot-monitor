@@ -34,6 +34,10 @@
 На Ubuntu 22.04/24.04:
 
 ```bash
+cd /tmp
+curl -fsSL -o hosts.tar.gz https://github.com/vikrk/hosts/archive/refs/heads/master.tar.gz
+tar -xzf hosts.tar.gz --overwrite
+cd hosts-master
 sudo bash install.sh
 sudo fleetctl
 ```
