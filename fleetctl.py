@@ -13,10 +13,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-import secrets
-import ssl
-import struct
-import time
+from urllib.parse import urlparse
 
 ROOT = "/etc/rvkomi-server-manager"
 STATE = "/var/lib/rvkomi-server-manager"
@@ -24,7 +21,8 @@ SSH_DIR = os.path.join(STATE, "ssh")
 CONFIG = os.path.join(ROOT, "manager.json")
 ENV_FILE = os.path.join(ROOT, "bot.env")
 sys.path.insert(0, "/opt/rvkomi-server-manager")
-from storage import connect, audit
+from storage import connect, audit, record_check
+from dns_monitor import DNS_ROUTE_DEFAULTS, check_dns_routes, validate_endpoint, validate_querylog_path
 
 
 def api(token, method, payload=None, timeout=35):
@@ -44,12 +42,59 @@ def save_bot_env(token, chat_id):
     if not re.fullmatch(r"\d{1,20}", str(chat_id)):
         raise ValueError("Chat ID должен быть числовым")
     api(token, "sendMessage", {"chat_id": chat_id, "text": "RVKOMI Server Manager подключён. Доступ привязан к этому чату."})
-    with open(ENV_FILE, "w", encoding="utf-8") as f:
-        f.write(f"BOT_TOKEN={token}\nBOT_CHAT_ID={chat_id}\n")
-    os.chmod(ENV_FILE, 0o640)
-    subprocess.run(["chown", "root:rvkomi-manager", ENV_FILE], check=False)
+    values = {}
+    try:
+        with open(ENV_FILE, encoding="utf-8") as f:
+            for line in f:
+                k, sep, v = line.rstrip("\n").partition("=")
+                if sep: values[k] = v
+    except FileNotFoundError:
+        pass
+    values.update({"BOT_TOKEN": token, "BOT_CHAT_ID": str(chat_id)})
+    temp = ENV_FILE + ".new"
+    with open(temp, "w", encoding="utf-8") as f:
+        for name in ("BOT_TOKEN", "BOT_CHAT_ID", "AI_BASE_URL", "AI_MODEL", "AI_API_KEY"):
+            if name in values: f.write(f"{name}={values[name]}\n")
+    os.chmod(temp, 0o640)
+    subprocess.run(["chown", "root:rvkomi-manager", temp], check=False)
+    os.replace(temp, ENV_FILE)
     subprocess.run(["systemctl", "enable", "rvkomi-server-manager.service"], check=False)
     subprocess.run(["systemctl", "restart", "rvkomi-server-manager.service"], check=False)
+
+
+def ai_wizard():
+    print("Настройка ИИ-диагностики (OpenAI-compatible Chat Completions API)")
+    print("ИИ получит результаты проверок и последние журналы разрешённых служб для анализа.")
+    print("Ключ вводится скрыто и хранится в bot.env с правами только для root и службы.")
+    base = input("HTTPS API base URL [https://api.groq.com/openai/v1]: ").strip() or "https://api.groq.com/openai/v1"
+    parsed = urlparse(base)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        print("Нужен HTTPS URL без логина, пароля, query и fragment."); return
+    model = input("Название модели [openai/gpt-oss-120b]: ").strip() or "openai/gpt-oss-120b"
+    if not model or len(model) > 120 or any(ord(ch) < 32 for ch in model):
+        print("Название модели не принято."); return
+    values = {}
+    try:
+        with open(ENV_FILE, encoding="utf-8") as f:
+            for line in f:
+                k, sep, v = line.rstrip("\n").partition("=")
+                if sep: values[k] = v
+    except FileNotFoundError:
+        pass
+    key = getpass.getpass("API key (ввод скрыт; Enter оставит сохранённый ключ): ").strip()
+    if key: values["AI_API_KEY"] = key
+    if not values.get("AI_API_KEY"):
+        print("API key обязателен."); return
+    values.update({"AI_BASE_URL": base.rstrip("/"), "AI_MODEL": model})
+    temp = ENV_FILE + ".new"
+    with open(temp, "w", encoding="utf-8") as f:
+        for name in ("BOT_TOKEN", "BOT_CHAT_ID", "AI_BASE_URL", "AI_MODEL", "AI_API_KEY"):
+            if name in values: f.write(f"{name}={values[name]}\n")
+    os.chmod(temp, 0o640)
+    subprocess.run(["chown", "root:rvkomi-manager", temp], check=False)
+    os.replace(temp, ENV_FILE)
+    subprocess.run(["systemctl", "restart", "rvkomi-server-manager.service"], check=False)
+    print("Настройки сохранены. В Telegram откройте узел и нажмите «ИИ-диагностика».")
 
 
 def bot_wizard():
@@ -291,12 +336,7 @@ def dns_route_menu():
             kind = kinds[idx]; proto, default_count = DNS_ROUTE_DEFAULTS[kind]
             endpoint = input("URL DoH (https://host/dns-query) или адрес DoT (host:853): ").strip()
             try:
-                parsed = urllib.parse.urlsplit(endpoint if proto == "doh" else "tls://" + endpoint)
-                if proto == "doh":
-                    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-                        raise ValueError("Нужен HTTPS URL без логина, пароля и query-параметров.")
-                elif parsed.scheme != "tls" or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
-                    raise ValueError("Нужен адрес host:port для DoT.")
+                validate_endpoint(kind, endpoint)
                 count_raw = input(f"Число проб [{default_count}]: ").strip()
                 count = int(count_raw or default_count)
                 if not 1 <= count <= 64: raise ValueError("Число проб должно быть от 1 до 64.")
@@ -322,7 +362,8 @@ def dns_route_menu():
             print("Удалено." if cur.rowcount else "Маршрут не найден.")
         elif choice == "4":
             path = input("Абсолютный путь к querylog.json на узле AdGuard: ").strip()
-            if not path.startswith("/") or "\n" in path or "\r" in path: print("Укажите абсолютный Linux-путь."); continue
+            try: path = validate_querylog_path(path)
+            except ValueError as exc: print(exc); continue
             with connect() as db: db.execute("INSERT INTO dns_node_config(node_id,querylog_path) VALUES(?,?) ON CONFLICT(node_id) DO UPDATE SET querylog_path=excluded.querylog_path", (node["id"], path))
             audit("local-admin", node["name"], "dns_querylog_set", path)
             print("Путь сохранён. Убедитесь, что файл доступен SSH-пользователю для чтения.")
@@ -344,85 +385,17 @@ def dns_route_menu():
         else: print("Нет такого пункта.")
 
 
-def dns_packet(qname):
-    labels = qname.rstrip(".").split(".")
-    q = b"".join(bytes([len(x)]) + x.encode("ascii") for x in labels) + b"\0" + struct.pack("!HH", 1, 1)
-    return struct.pack("!HHHHHH", secrets.randbelow(65536), 0x0100, 1, 0, 0, 0) + q
-
-
-def send_dns_probe(endpoint, proto, qname):
-    packet = dns_packet(qname)
-    if proto == "doh":
-        req = urllib.request.Request(endpoint, data=packet, headers={"Content-Type": "application/dns-message", "Accept": "application/dns-message"}, method="POST")
-        with urllib.request.urlopen(req, timeout=8, context=ssl.create_default_context()) as response:
-            response.read(4096)
-    else:
-        parsed = urllib.parse.urlsplit("tls://" + endpoint)
-        host, port = parsed.hostname, parsed.port or 853
-        ctx = ssl.create_default_context()
-        with socket.create_connection((host, port), timeout=8) as raw:
-            with ctx.wrap_socket(raw, server_hostname=host) as conn:
-                conn.sendall(struct.pack("!H", len(packet)) + packet)
-                head = conn.recv(2)
-                if len(head) != 2: raise OSError("не получен DNS-ответ по DoT")
-                size = struct.unpack("!H", head)[0]
-                remaining = size
-                while remaining:
-                    chunk = conn.recv(remaining)
-                    if not chunk: raise OSError("оборван DNS-ответ по DoT")
-                    remaining -= len(chunk)
-
-
-def read_querylog(node, path, marker):
-    if node["fingerprint"] == "local":
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            f.seek(max(0, os.path.getsize(path) - 8 * 1024 * 1024)); return f.read()
-    try: import paramiko
-    except ImportError as exc: raise RuntimeError("Paramiko не установлен") from exc
-    if not re.fullmatch(r"/[A-Za-z0-9_./-]{1,240}", path): raise ValueError("Недопустимый путь журнала")
-    client = paramiko.SSHClient(); client.load_host_keys(os.path.join(SSH_DIR, "known_hosts")); client.set_missing_host_key_policy(paramiko.RejectPolicy())
-    try:
-        client.connect(node["host"], username=node["user"], key_filename=node["key_path"], timeout=10, look_for_keys=False, allow_agent=False)
-        # Path has a strict character allowlist; tail reads a bounded recent window.
-        _, stdout, stderr = client.exec_command("tail -c 8388608 -- " + path, timeout=12)
-        data = stdout.read().decode("utf-8", "replace")
-        status = stdout.channel.recv_exit_status()
-        if status: raise RuntimeError(stderr.read().decode("utf-8", "replace")[:300] or "не удалось прочитать query log")
-        return data
-    finally: client.close()
-
-
 def run_dns_check(node):
-    with connect() as db:
-        routes = db.execute("SELECT route_type,endpoint,probe_count FROM dns_routes WHERE node_id=? AND enabled=1 ORDER BY id", (node["id"],)).fetchall()
-        cfg = db.execute("SELECT querylog_path FROM dns_node_config WHERE node_id=?", (node["id"],)).fetchone()
-    if not routes: print("Для узла не настроены DNS-маршруты."); return
-    if not cfg or not cfg["querylog_path"]: print("Сначала задайте путь к журналу AdGuard в DNS-меню."); return
-    probes = []
-    for route_index, route in enumerate(routes):
-        proto = DNS_ROUTE_DEFAULTS.get(route["route_type"], ("doh", 1))[0]
-        for _ in range(route["probe_count"]):
-            qname = "rvk-" + secrets.token_hex(12) + ".example.org"
-            try: send_dns_probe(route["endpoint"], proto, qname); sent = True
-            except Exception as exc:
-                sent = False; print(f"{route['route_type']}: отправка не удалась ({type(exc).__name__}: {exc})")
-            probes.append((route_index, route["route_type"], qname, sent))
-    found = set(); deadline = time.time() + 25
-    while time.time() < deadline:
-        try:
-            log = read_querylog(node, cfg["querylog_path"], "rvk-")
-            found = {q for _, _, q, _sent in probes if q in log}
-        except Exception as exc:
-            print(f"Не удалось прочитать журнал AdGuard: {exc}"); return
-        if all(q in found for _, _, q, _sent in probes): break
-        time.sleep(2)
-    for route_index, route in enumerate(routes):
-        related = [(q, sent) for idx, _, q, sent in probes if idx == route_index]
-        count = sum(1 for q, _sent in related if q in found)
-        print(f"{route['route_type']}: {count}/{route['probe_count']} — обнаружено в журнале AdGuard")
-    total = len(probes); logged = len(found)
-    print(f"Итого: {logged}/{total} проб обнаружено в журнале AdGuard. Ответ DNS сам по себе не засчитывается.")
-    audit("local-admin", node["name"], "dns_route_check", f"{logged}/{total} probes logged")
+    result = check_dns_routes(node, SSH_DIR)
+    record_check(node["id"], "dns_routes", result.get("status", "unknown"), json.dumps(result, ensure_ascii=False))
+    if result["status"] in ("not_configured", "log_error", "error"):
+        print(result["message"]); return
+    for route in result["routes"]:
+        print(f"{route['route_type']}: {route['logged']}/{route['total']} — обнаружено в журнале AdGuard")
+        if route["send_errors"]:
+            print(f"  Ошибки отправки: {len(route['send_errors'])}")
+    print(f"Итого: {result['logged']}/{result['total']} проб обнаружено в журнале AdGuard. Ответ DNS сам по себе не засчитывается.")
+    audit("local-admin", node["name"], "dns_route_check", f"{result['logged']}/{result['total']} probes logged")
 
 
 def backup():
@@ -499,7 +472,7 @@ def main():
             "Настройка времени мониторинга", "Подключение роутера по SSH", "Список серверов и роутеров",
             "Проверить узел сейчас", "Действия после подтверждения в Telegram", "Журнал действий",
             "Резервная копия настроек и восстановление", "Управление доступом администратора", "Диагностика управляющего сервера", "Отключить сервер или роутер", "Выход",
-            "Задать имя основного сервера", "DNS-маршруты: добавить и проверить"], 1):
+            "Задать имя основного сервера", "DNS-маршруты: добавить и проверить", "Настроить ИИ-диагностику"], 1):
             print(f" {i:2}. {item}")
         choice = input("Выберите пункт: ").strip()
         if choice == "1":
@@ -534,6 +507,7 @@ def main():
             try: register_main(main_name)
             except Exception as exc: print(f"Не удалось зарегистрировать основной сервер: {exc}")
         elif choice == "16": dns_route_menu()
+        elif choice == "17": ai_wizard()
         else: print("Нет такого пункта.")
 
 
