@@ -3,6 +3,7 @@
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 DROPIN = Path('/etc/systemd/system/rvkomi-extra-monitor.timer.d/override.conf')
@@ -21,8 +22,9 @@ def main():
     os.chmod(temporary, 0o644)
     os.replace(temporary, DROPIN)
     subprocess.run(['systemctl', 'daemon-reload'], check=True)
-    subprocess.run(['systemctl', 'enable', '--now', 'rvkomi-extra-monitor.timer'], check=True)
-    subprocess.run(['systemctl', 'restart', 'rvkomi-extra-monitor.timer'], check=True)
+    if '--configure-only' not in sys.argv:
+        subprocess.run(['systemctl', 'enable', '--now', 'rvkomi-extra-monitor.timer'], check=True)
+        subprocess.run(['systemctl', 'restart', 'rvkomi-extra-monitor.timer'], check=True)
     print(f'Периодический мониторинг настроен: раз в {minutes} минут.')
 
 

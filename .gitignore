@@ -18,4 +18,7 @@ ai.json
 *.key
 control-keys/
 outputs/
+fleet.json
+main-profile.json
+*.enc
 

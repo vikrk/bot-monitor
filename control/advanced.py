@@ -1,10 +1,12 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 #!/usr/bin/python3
 """Owner-only operational UI, bounded history, encrypted WebDAV backups."""
 import re,urllib.parse,xml.etree.ElementTree as ET,base64,concurrent.futures,copy,datetime,fcntl,hashlib,hmac,importlib.util,json,os,secrets,shutil,sqlite3,subprocess,tarfile,tempfile,time,urllib.request,urllib.error
 from pathlib import Path
 BASE=Path('/usr/local/lib/rvkomi-watchdog');ROOT=Path('/etc/rvkomi-watchdog');STATE=Path('/var/lib/rvkomi-watchdog')
 HOSTS=['spb','nl','dns','www','space','latvia','fin','telegramm'];ALL=HOSTS;LABEL={'telegramm':'TELEGRAM'}
+import fleet
+if fleet.enabled():
+ HOSTS=list(fleet.nodes());ALL=HOSTS;LABEL={h:n['name'] for h,n in fleet.nodes().items()}
 ACTIONS={'extras','certs','backup-export','maint-15','maint-30','maint-60','maint-off'}
 COMMANDS=[('summary','Общая сводка одним сообщением'),('backup','Создать зашифрованные копии на роутере'),('backup_status','Статус копий и теста восстановления'),('maintenance','Обслуживание: 15/30/60 минут'),('history','История проверок за сутки'),('certificates','Сроки сертификатов'),('resources','RAM, диск и запас Nginx')]
 BUTTONS={'🖥 Сводка':'summary','💾 Создать копии':'backup','📦 Статус копий':'backup_status','🛠 Обслуживание':'maintenance','📈 История':'history','🔐 Сертификаты':'certificates','⚙️ Ресурсы':'resources'}
@@ -24,6 +26,7 @@ def ssh_job(host,action):
  args=['ssh','-4','-T','-F','/dev/null','-p',str(cfg['port']),'-o','StrictHostKeyChecking=yes','-o','UserKnownHostsFile='+cfg['known_hosts'],'-o','GlobalKnownHostsFile=/dev/null','-o','HostKeyAlgorithms=ssh-ed25519','-o','ConnectTimeout=7','-o','ServerAliveInterval=10','-o','ServerAliveCountMax=2','-i',cfg['key'],'-o','IdentitiesOnly=yes','-o','BatchMode=yes','-o','PasswordAuthentication=no','root@'+cfg['address'],action]
  return args,os.environ.copy()
 def rpc(host,action):
+ if fleet.enabled():return fleet.rpc(host,action)
  args,env=ssh_job(host,action);r=subprocess.run(args,env=env,stdin=subprocess.DEVNULL,capture_output=True,text=True,start_new_session=True,timeout=55)
  if r.returncode:raise RuntimeError('Node RPC failed')
  d=json.loads(r.stdout)
@@ -338,7 +341,7 @@ def certificate_alerts(bot):
    if c.get('cached') and time.time()-c.get('checked_at',0)>3*86400:continue
    tier=next((x for x in [0,7,14,30] if c['days']<=x),None)
    if tier is None:continue
-   key=h+':'+c['fingerprint']+':'+str(tier)
+   key=h+':'+c.get('fingerprint',c['subject'])+':'+str(tier)
    if key in state:continue
    bot.send('🔐 ⚠️ '+label(h)+' '+c['subject'].replace('subject=','')+f": до окончания {c['days']:.1f} дней. Проверь автопродление.")
    state[key]=time.time();atomic(p,state)

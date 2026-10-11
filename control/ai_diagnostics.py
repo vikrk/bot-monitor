@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 """Read-only AI analysis of the existing watchdog's check history."""
 import json
 import re

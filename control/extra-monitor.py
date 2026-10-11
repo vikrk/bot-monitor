@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 #!/usr/bin/python3
 """NL-hosted read-only checks of DNS/WWW/SPACE/LATVIA/FIN. Alerts only; never repairs."""
 import concurrent.futures,fcntl,importlib.util,json,time
@@ -12,6 +11,8 @@ def policy(previous,failures):
  return {'counters':counters,'signature':persistent or (oldsig if failures else [])},('failure' if persistent and persistent!=oldsig else 'recovery' if oldsig and not failures else None)
 def main():
  s=importlib.util.spec_from_file_location('tc',BASE/'telegram-control.py');tc=importlib.util.module_from_spec(s);s.loader.exec_module(tc)
+ import fleet,generic_control
+ if fleet.enabled():return generic_control.monitor(tc)
  credentials=json.loads((ROOT/'telegram.json').read_text());api=tc.API(credentials);owner=int(credentials['chat_id']);nodes=tc.Nodes()
  STATE.mkdir(mode=0o700,parents=True,exist_ok=True)
  with (STATE/'extra-monitor.lock').open('a+') as lock:

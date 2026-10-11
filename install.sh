@@ -1,9 +1,8 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 #!/usr/bin/env bash
 set -euo pipefail
 
 echo "Установочный комплект RVKOMI"
-echo "1. Установить основу: rvkomi-telegram-control и полный существующий мониторинг"
+echo "1. Установить Telegram-контроль и настроить свои серверы/роутеры"
 echo "2. Установить отдельный Server Manager (другая Telegram-служба)"
 read -r -p "Выбор [1]: " choice
 choice=${choice:-1}

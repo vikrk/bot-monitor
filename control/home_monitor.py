@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 #!/usr/bin/python3
 import concurrent.futures,json,os,secrets,time,threading,socket,ssl,urllib.request,urllib.error,struct,random,urllib.parse
 from pathlib import Path

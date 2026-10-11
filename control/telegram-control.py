@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 #!/usr/bin/python3
 """Owner-only Telegram control plane. No arbitrary shell or automatic OS reboot."""
 import copy, argparse, concurrent.futures, fcntl, json, os, re, secrets, subprocess, threading, time, urllib.error, urllib.request
@@ -497,6 +496,8 @@ class Bot:
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('mode',choices=['register','poll','announce','verify']);a=p.parse_args()
+    import fleet, generic_control, sys
+    if fleet.enabled():return generic_control.run(sys.modules[__name__],a.mode)
     credentials=json.loads((ROOT/'telegram.json').read_text());owner=int(credentials['chat_id'])
     if owner<=0:raise ValueError('Private chat enrollment required')
     api=API(credentials);me=api.call('getMe')

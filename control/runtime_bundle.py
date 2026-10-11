@@ -22,18 +22,21 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 ROOT = Path('/etc/rvkomi-watchdog')
 STATE = Path('/var/lib/rvkomi-watchdog')
+TIMER_DROPIN = Path('/etc/systemd/system/rvkomi-extra-monitor.timer.d/override.conf')
 MAGIC = b'RVKCTRL1'
 ITERATIONS = 600_000
 MAX_BUNDLE = 256 * 1024 * 1024
 CONFIG_FILES = (
     'telegram.json', 'ai.json', 'control-nodes.json', 'extra-nodes.json',
     'router-agent.json', 'backup-webdav.json', 'backup-recovery.key',
+    'fleet.json', 'main-profile.json',
 )
 STATE_FILES = (
     'history.jsonl', 'telegram-control-state.json', 'extra-monitor-state.json',
     'router-state.json', 'router-settings.json', 'router-task.json',
     'router-baseline.json', 'router-alert-state.json', 'backup-state.json',
     'certificate-alert-state.json', 'maintenance-central.json',
+    'generic-control-state.json', 'generic-monitor-state.json', 'main-last-check.json',
 )
 HOSTS = {'spb', 'nl', 'dns', 'www', 'space', 'latvia', 'fin', 'telegramm'}
 EXPECTED_INVENTORIES = {
@@ -48,7 +51,7 @@ def fail(message):
 
 def check_root():
     if os.geteuid() != 0:
-        fail('Запустите команду от root: sudo rvkomi-control-export или sudo rvkomi-control-import')
+        fail('Запустите команду от root: sudo rvkomi-control-runtime export или import')
 
 
 def derive(passphrase, salt):
@@ -78,7 +81,7 @@ def export_bundle(destination):
     files = {}
     metadata = {'version': 1, 'created_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 'hosts': [], 'files': {}, 'monitor_interval_minutes': 2}
-    interval_dropin = Path('/etc/systemd/system/rvkomi-extra-monitor.timer.d/override.conf')
+    interval_dropin = TIMER_DROPIN
     if interval_dropin.is_file() and not interval_dropin.is_symlink():
         match = re.search(r'(?m)^OnUnitInactiveSec=(\d+)min\s*$', interval_dropin.read_text(encoding='utf-8'))
         if match and 2 <= int(match.group(1)) <= 1440:
@@ -109,6 +112,23 @@ def export_bundle(destination):
 
     # Normalize key paths in the copied JSON and include only keys named by the
     # two explicit node inventories; arbitrary files under /root are excluded.
+    portable = files.get('etc/rvkomi-watchdog/fleet.json')
+    if portable:
+        inventory = json.loads(portable)
+        if inventory.get('version') != 1 or not isinstance(inventory.get('nodes'), dict):
+            fail('Неверный fleet.json; экспорт отменён.')
+        for host, cfg in inventory['nodes'].items():
+            if not re.fullmatch(r'[a-z][a-z0-9_]{0,23}', host) or not isinstance(cfg, dict):
+                fail('Неверная запись fleet.json; экспорт отменён.')
+            metadata['hosts'].append(host)
+            if cfg.get('transport') == 'local': continue
+            key = relative_runtime_path(cfg.get('key', ''))
+            known = relative_runtime_path(cfg.get('known_hosts', ''))
+            files[f'etc/rvkomi-watchdog/keys/{host}_ed25519'] = key.read_bytes()
+            files[f'etc/rvkomi-watchdog/known_hosts/{host}'] = known.read_bytes()
+            cfg['key'] = f'/etc/rvkomi-watchdog/keys/{host}_ed25519'
+            cfg['known_hosts'] = f'/etc/rvkomi-watchdog/known_hosts/{host}'
+        files['etc/rvkomi-watchdog/fleet.json'] = (json.dumps(inventory, ensure_ascii=False, indent=2) + '\n').encode()
     for filename in ('control-nodes.json', 'extra-nodes.json'):
         raw = files.get('etc/rvkomi-watchdog/' + filename)
         if raw is None:
@@ -137,7 +157,7 @@ def export_bundle(destination):
 
     if 'etc/rvkomi-watchdog/telegram.json' not in files:
         fail('Нет telegram.json. Сначала настройте контрольного Telegram-бота.')
-    if not {'control-nodes.json', 'extra-nodes.json'} <= {
+    if not portable and not {'control-nodes.json', 'extra-nodes.json'} <= {
             p.rsplit('/', 1)[-1] for p in files if p.startswith('etc/rvkomi-watchdog/') and '/keys/' not in p and '/known_hosts/' not in p}:
         fail('Не найдены оба списка SSH-узлов; экспорт отменён.')
 
@@ -185,9 +205,9 @@ def safe_member_name(name):
     if len(p.parts) == 3:
         return p.parts[2] in CONFIG_FILES
     if len(p.parts) == 4 and p.parts[2] == 'keys':
-        return bool(re.fullmatch(r'(?:spb|nl|dns|www|space|latvia|fin|telegramm)_ed25519', p.name))
+        return bool(re.fullmatch(r'[a-z][a-z0-9_]{0,23}_ed25519', p.name))
     if len(p.parts) == 4 and p.parts[2] == 'known_hosts':
-        return p.name in HOSTS
+        return bool(re.fullmatch(r'[a-z][a-z0-9_]{0,23}', p.name))
     if len(p.parts) == 5 and p.parts[2] == 'router-tls':
         return bool(re.fullmatch(r'[a-z0-9.-]{1,253}', p.parts[3])) and p.name in ('fullchain.pem', 'privkey.pem')
     return False
@@ -200,7 +220,7 @@ def import_bundle(source):
         encrypted = source.read_bytes()
     except OSError:
         fail('Не удалось прочитать файл зашифрованной копии.')
-    if len(encrypted) > MAX_BUNDLE + 1024 * 1024 or not encrypted.startswith(MAGIC) or len(encrypted) < 25:
+    if len(encrypted) > (MAX_BUNDLE + 2) * 4 // 3 + 1024 or not encrypted.startswith(MAGIC) or len(encrypted) < 25:
         fail('Файл не похож на резервную копию RVKOMI или превышает допустимый размер.')
     salt, payload = encrypted[len(MAGIC):len(MAGIC) + 16], encrypted[len(MAGIC) + 16:]
     password = getpass.getpass('Пароль резервной копии: ')
@@ -268,7 +288,7 @@ def import_bundle(source):
         os.chmod(dest, 0o600)
     minutes = manifest.get('monitor_interval_minutes', 2)
     if isinstance(minutes, int) and 2 <= minutes <= 1440:
-        dropin = Path('/etc/systemd/system/rvkomi-extra-monitor.timer.d/override.conf')
+        dropin = TIMER_DROPIN
         dropin.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         temporary = dropin.with_suffix('.conf.tmp')
         temporary.write_text('[Timer]\nOnUnitInactiveSec=' + str(minutes) + 'min\n', encoding='utf-8')

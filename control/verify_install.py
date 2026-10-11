@@ -16,6 +16,19 @@ EXPECTED = {
 def main():
     if os.geteuid() != 0:
         raise SystemExit('Запустите от root: sudo rvkomi-control-verify')
+    import fleet
+    if fleet.enabled():
+        failed = []
+        for identifier, node in fleet.nodes().items():
+            try:
+                fleet.rpc(identifier, 'status')
+                print(node['name'] + ': ' + ('локальные проверки доступны' if node['transport'] == 'local' else 'SSH/RPC доступен'))
+            except Exception:
+                failed.append(node['name'])
+                print(node['name'] + ': подключение недоступно')
+        if failed: raise SystemExit('Проверьте подключения: ' + ', '.join(failed))
+        if not fleet.nodes(): raise SystemExit('Нет настроенных узлов')
+        return
     if not (ROOT / 'telegram.json').is_file():
         raise SystemExit('Нет telegram.json. Настройте контрольного Telegram-бота.')
     for name, required in EXPECTED.items():

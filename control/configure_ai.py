@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 #!/usr/bin/python3
 """Securely configure the optional AI provider for the RVKOMI control bot."""
 import getpass
