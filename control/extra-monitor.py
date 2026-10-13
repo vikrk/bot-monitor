@@ -2,6 +2,7 @@
 """NL-hosted read-only checks of DNS/WWW/SPACE/LATVIA/FIN. Alerts only; never repairs."""
 import concurrent.futures,fcntl,importlib.util,json,time
 from pathlib import Path
+import history_diagnostics
 import advanced
 BASE=Path('/usr/local/lib/rvkomi-watchdog');ROOT=Path('/etc/rvkomi-watchdog');STATE=Path('/var/lib/rvkomi-watchdog')
 def policy(previous,failures):
@@ -24,10 +25,15 @@ def main():
   def check(h):
    if advanced.read(STATE/'maintenance-central.json').get(h,{}).get('until',0)>time.time():return h,{'skipped':'maintenance'}
    try:
+    # SPB retains its local checker; NL needs an actual read-only measurement.
+    if h=='spb':
+     r=nodes.call(h,'status')
+     advanced.scheduled_record(None,h,r)
+     return h,{'failures':[] if not r.get('bridge_error') and 'last_check' in r else ['heartbeat-invalid-status'],'heartbeat_only':True}
     r=nodes.call(h,'check');advanced.scheduled_record(None,h,r);return h,r
    except Exception as exc:
-    result={'last_check':time.time(),'failures':['ssh-or-check-unavailable'],'error_type':type(exc).__name__,'error':'SSH/RPC check unavailable'}
-    advanced.scheduled_record(None,h,result)
+    result={'failures':['ssh-or-check-unavailable'],'error':history_diagnostics.text(str(exc))}
+    advanced.journal(h,result,'scheduled')
     return h,result
   summary={}
   with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
@@ -64,4 +70,3 @@ def main():
 if __name__=='__main__':
  try:main()
  except Exception as e:print(json.dumps({'monitor_error':type(e).__name__}));raise SystemExit(1)
-

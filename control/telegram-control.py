@@ -2,15 +2,17 @@
 """Owner-only Telegram control plane. No arbitrary shell or automatic OS reboot."""
 import copy, argparse, concurrent.futures, fcntl, json, os, re, secrets, subprocess, threading, time, urllib.error, urllib.request
 from pathlib import Path
+import history_diagnostics
 import advanced
 import home_monitor
 import ai_diagnostics
+import ai_admin
 
 ROOT=Path('/etc/rvkomi-watchdog');STATE=Path('/var/lib/rvkomi-watchdog')
 BRIDGE='/usr/local/lib/rvkomi-watchdog/bot-bridge.py'
 NONCE=re.compile(r'^[0-9a-f]{32}$')
 HOSTS=['spb','nl','dns','www','space','latvia','fin','telegramm']
-AI_HOSTS=['spb','nl','dns','www','space','latvia','fin']
+AI_HOSTS=['spb','nl','dns','www','space','latvia','fin','telegramm']
 EXTRA_HOSTS=['dns','www','space','latvia','fin','telegramm']
 COMMANDS=[('status','Последний статус всех серверов'),('check_all','Свежая проверка всех серверов'),('ai_all','ИИ-анализ всех серверов и роутера'),('check_spb','SPB: маршруты, CDN и TLS-рукопожатие'),('check_nl','NL: маршруты, CDN и TLS-рукопожатие'),('check_dns','DNS: DoH/DoT, CDN и все подмены → FIN'),('check_www','Проверка WWW: VLESS и все выходы'),('check_space','Проверка SPACE'),('check_latvia','Проверка LATVIA'),('check_fin','FIN: VLESS и все SNI relay-проверки'),('check_telegramm','Проверка TELEGRAMM: MTProxy и службы'),('reboot_spb','Ручной reboot SPB с подтверждением'),('reboot_nl','Ручной reboot NL с подтверждением'),('cancel','Отмена неподтверждённых запросов'),('help','Команды и ограничения')]
 HELP='DNS: все SNI-подмены → FIN. FIN: основной relay; NL: сохранён для отката.\nАвтоперезагрузки отключены.\n/status — последний статус\n/check_all — проверить все восемь серверов\n/check_spb /check_nl /check_dns /check_www /check_space /check_latvia /check_fin /check_telegramm — проверить выбранный сервер\n/reboot_spb /reboot_nl — запросить reboot\n/cancel — отменить неподтверждённые запросы\n\nReboot требует одноразового подтверждения за 2 минуты. Между перезагрузками любых серверов — минимум 10 минут. Одновременного reboot обоих серверов нет. DNS и WWW: ограниченное автоисправление; SPACE, LATVIA, FIN и TELEGRAMM: только наблюдение. Новые узлы не поддерживают reboot. Команды принимаются только от владельца в подключённом личном чате.'
@@ -45,17 +47,23 @@ HELP+='\n/cdn_nl — состояние и кнопка включения/вы�
 COMMANDS.insert(0,('menu','Кнопки проверки серверов'))
 COMMANDS.insert(1,('ping','По 4 ping: средняя задержка и потери'))
 HELP+='\n\n/menu — открыть кнопки проверки. Кнопки не перезагружают серверы.'
-HELP+='\n/ping — 4 ICMP-запроса к восьми серверам и роутеру vikrk.netcraze.pro, с TELEGRAM. Нет ответа на ping не доказывает отказ VPN.'
+HELP+='\n/ping — 4 ICMP-запроса к восьми серверам и роутеру настроенному адресу, с TELEGRAM. Нет ответа на ping не доказывает отказ VPN.'
 
 
 HELP+='\n/check_spb и /check_nl: дополнительно TLS-рукопожатие CDN и origin, имя и цепочка сертификата, срок действия. Сбой только CDN не перезапускает службы.'
 
 # Fixed, owner-controlled inventory; no user-provided ping destinations.
-PING_TARGETS=[('SPB','136.234.4.84'),('NL','46.8.103.60'),
-    ('DNS','139.100.236.237'),('WWW','93.88.203.77'),
-    ('SPACE','45.131.186.138'),('LATVIA','45.39.84.218'),
-    ('FIN','193.23.201.203'),('TELEGRAM','150.241.71.213'),
-    ('РОУТЕР','vikrk.netcraze.pro')]
+def inventory_ping_targets():
+    import fleet
+    if fleet.enabled():return [(n['name'],n['address']) for n in fleet.nodes().values() if n['transport']!='local']
+    result=[]
+    for filename in ('control-nodes.json','extra-nodes.json'):
+        try:
+            for name,node in json.loads((ROOT/filename).read_text()).items():
+                result.append((name.upper(),node['address']))
+        except (OSError,ValueError):pass
+    return result
+PING_TARGETS=inventory_ping_targets()
 
 def ping_target(target):
     label,address=target
@@ -76,7 +84,7 @@ def ping_target(target):
         'average_ms':float(timing.group(2)) if received else None}
 
 def format_pings(results):
-    lines=['📡 PING серверов и роутера — по 4 запроса','Точка проверки: TELEGRAM; его собственный адрес проверяется локально.','Роутер: vikrk.netcraze.pro (IPv4-адрес, полученный из DNS).','']
+    lines=['📡 PING серверов и роутера — по 4 запроса','Точка проверки: TELEGRAM; его собственный адрес проверяется локально.','Роутер: настроенному адресу (IPv4-адрес, полученный из DNS).','']
     for r in results:
         if r.get('error'):
             lines.append('⚠️ '+r['label']+': '+r['error']);continue
@@ -119,6 +127,14 @@ HELP+='\n\n/summary — сводка; /backup и /backup_status — зашифр
 # Compact bottom keyboard: all other actions are in /menu.
 REPLY_KEYBOARD['keyboard']=[[{'text':'🔌 CDN NL'}]]
 
+COMMANDS.insert(0,('dns_sni_check','Проверить DNS и SNI-relay FIN'))
+MENU_COMMANDS.add('dns_sni_check')
+INLINE_MENU['inline_keyboard'].insert(1,[{'text':'🌐 Проверка DNS и SNI-relay','callback_data':'menu:dns_sni_check'}])
+COMMANDS.insert(0,('ai_change','Предложить изменение с подтверждением'))
+MENU_COMMANDS.add('ai_change')
+INLINE_MENU['inline_keyboard'].insert(1,[{'text':'🛠 ИИ: предложить изменение','callback_data':'menu:ai_change'}])
+HELP+='\n/ai_change — предложение правки: добавление доменов в существующее proxy-правило DNS-перезаписи, пользовательские правила и HTTPS-подписки AdGuard, SNI-домены и явные назначения FIN или перезапуск разрешённых служб. Только после объяснения и одноразового подтверждения владельца.'
+
 class API:
     def __init__(self,credentials):self.token=credentials['bot_token'];self.opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
     def call(self,method,data=None,timeout=40):
@@ -149,7 +165,7 @@ class Nodes:
           action+(' '+nonce if nonce else '')]
         try:r=subprocess.run(args,capture_output=True,text=True,timeout=145 if host in EXTRA_HOSTS and action=='check' else (225 if action=='check' else 130))
         except subprocess.TimeoutExpired:raise RuntimeError('Node request timed out') from None
-        if r.returncode:raise RuntimeError('Node RPC failed')
+        if r.returncode:raise RuntimeError('Node RPC failed (exit='+str(r.returncode)+'): '+history_diagnostics.text(r.stderr))
         try:return json.loads(r.stdout)
         except Exception:raise RuntimeError('Invalid node response') from None
 
@@ -338,7 +354,7 @@ class Bot:
         history=[row for row in advanced.history() if row.get('h') in AI_HOSTS][-160:]
         try:answer=ai_diagnostics.analyze(checks,history,router,'\n'.join(logs))
         except Exception as exc:answer='⚠️ '+str(exc)
-        self.send('🧠 ИИ-анализ всех узлов\n\n'+answer+'\n\nИИ только анализирует данные. Действия доступны только через существующие функции бота и их подтверждение.')
+        self.send('🧠 ИИ-анализ всех узлов\n\n'+answer+'\n\nЭтот анализ ничего не меняет. /ai_change — отдельный точный план разрешённого изменения с объяснением и подтверждением владельца.')
     def request_reboot(self,host):
         with self.lock:
             generation=self.state.get('cancel_generation',0)
@@ -363,6 +379,10 @@ class Bot:
         with self.lock:
             if nonce in self.state['pending']:self.state['pending'][nonce]['message_id']=msg['message_id'];self.save()
     def cancel(self):
+        with self.lock:
+            pending=self.state.pop('ai_admin_pending',{})
+            self.state.pop('ai_admin_waiting',None);self.save()
+        if pending.get('message_id'):self.remove_buttons(pending['message_id'])
         with self.lock:self.state.pop('cdn_pending',None);self.state.pop('backup_pending',None);items=list(self.state['pending'].items());self.state['pending']={};self.state['cancel_generation']=self.state.get('cancel_generation',0)+1;self.save()
         for nonce,p in items:
             self.remove_buttons(p.get('message_id'))
@@ -379,6 +399,8 @@ class Bot:
     def callback(self,q):
         if not authorized_callback(q,self.owner):return
         data=q.get('data','');kind,sep,nonce=data.partition(':')
+        if sep and kind in ('aiconfirm','aiabort'):
+            ai_admin.callback(self,q,kind,nonce);return
         if sep and kind in ['maintnode','maintset']:
             advanced.maintenance_callback(self,q,kind,nonce);return
         if sep and kind in ['backupconfirm','backupcancel']:
@@ -418,6 +440,7 @@ class Bot:
         m=update.get('message',{})
         if not authorized_message(m,self.owner):return
         text=m.get('text','').strip()
+        if ai_admin.consume(self,m):return
         if text in BUTTON_COMMANDS:
             self.handle_command(BUTTON_COMMANDS[text],m.get('date',0));return
         words=text.split()
@@ -443,6 +466,15 @@ class Bot:
                     self.send('PING недавно запрошен. Подожди 30 секунд.');return
                 self.state['check_times']['_ping']=now;self.save()
             self.send('📡 Выполняю по 4 ping к 9 целям (8 серверов и роутер) с TELEGRAM.');self.executor.submit(self.run_pings);return
+        if cmd=='dns_sni_check':
+            if time.time()-message_date>180:self.send('Запрос устарел; открой меню снова.');return
+            with self.lock:
+                if time.time()-self.state['check_times'].get('_dns_sni',0)<60:self.send('Проверка недавно запрошена; подожди минуту.');return
+                self.state['check_times']['_dns_sni']=time.time();self.save()
+            self.send('🌐 Проверяю DNS/DoH/DoT и DNS-перезаписи, затем TLS через SNI-relay FIN. Без изменения настроек.');self.executor.submit(self.run_checks,['dns','fin'],True);return
+        if cmd=='ai_change':
+            if time.time()-message_date>180:self.send('Запрос устарел; открой /ai_change снова.');return
+            ai_admin.begin(self);return
         if cmd=='ai_all':
             with self.lock:
                 now=time.time()
@@ -496,7 +528,7 @@ class Bot:
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('mode',choices=['register','poll','announce','verify']);a=p.parse_args()
-    import fleet, generic_control, sys
+    import fleet,generic_control,sys
     if fleet.enabled():return generic_control.run(sys.modules[__name__],a.mode)
     credentials=json.loads((ROOT/'telegram.json').read_text());owner=int(credentials['chat_id'])
     if owner<=0:raise ValueError('Private chat enrollment required')
@@ -522,4 +554,3 @@ def main():
 if __name__=='__main__':
     try:main()
     except Exception as exc:print(json.dumps({'control_error':type(exc).__name__}),flush=True);raise SystemExit(1)
-

@@ -95,9 +95,10 @@ def service_log_directory(unit):
 
 
 def journal():
-    changed = put('/etc/systemd/journald.conf.d/90-rvkomi-retention.conf',
-                  '[Journal]\nStorage=persistent\nMaxRetentionSec=72h\nMaxFileSec=1h\n'
-                  'SystemMaxUse=1G\nRuntimeMaxUse=1G\n')
+    changed = put('/etc/systemd/journald.conf.d/zz-rvkomi-retention.conf',
+                  '[Journal]\nStorage=persistent\nCompress=yes\nMaxRetentionSec=72h\nMaxFileSec=1h\n'
+                  'SystemMaxUse=1G\nRuntimeMaxUse=1G\nSystemMaxFileSize=16M\nSystemMaxFiles=256\n'
+                  'SystemKeepFree=1G\nRateLimitIntervalSec=0\n')
     path = Path('/var/log/journal')
     path.mkdir(parents=True, exist_ok=True)
     os.chown(path, 0, grp.getgrnam('systemd-journal').gr_gid)
@@ -240,7 +241,7 @@ def nginx():
     main = Path(files[0])
     prefix = main.parent
     preread = 'ssl_preread' in dump or '--with-stream_ssl_preread_module' in run(['nginx', '-V']).stderr
-    http_format = """log_format rvkomi_http escape=json '{"time":"$time_iso8601","remote":"$remote_addr","host":"$host","method":"$request_method","status":$status,"request_time":"$request_time","upstream":"$upstream_addr","connect_time":"$upstream_connect_time","header_time":"$upstream_header_time","response_time":"$upstream_response_time","tls":"$ssl_protocol","cipher":"$ssl_cipher","sni":"$ssl_server_name"}';
+    http_format = """log_format rvkomi_http escape=json '{"time":"$time_iso8601","request_id":"$request_id","client":"$remote_addr","server":"$server_name","port":"$server_port","host":"$host","method":"$request_method","uri":"$uri","status":$status,"request_time":"$request_time","upstream":"$upstream_addr","upstream_status":"$upstream_status","connect_time":"$upstream_connect_time","header_time":"$upstream_header_time","response_time":"$upstream_response_time","tls":"$ssl_protocol","cipher":"$ssl_cipher","sni":"$ssl_server_name"}';
 access_log /var/log/nginx/rvkomi-http.log rvkomi_http;
 """
     sni = '$ssl_preread_server_name' if preread else '-'
@@ -418,7 +419,8 @@ def install_units(agent_dirs):
 
 def retention():
     # Only known diagnostic log directories, not backups, AdGuard querylog or databases.
-    directories = [Path('/var/log/xray'), Path('/var/log/xray-standalone'), Path('/var/log/nginx'), LOG]
+    directories = [Path('/var/log/xray'), Path('/var/log/xray-standalone'), Path('/var/log/nginx'),
+                   Path('/var/log/x-ui'), Path('/var/log/rvkomi-probes'), Path('/var/log/rvkomi-xray'), LOG]
     files = sorted({str(p) for directory in directories if directory.exists()
                     for p in directory.glob('*.log') if p.is_file() and not p.is_symlink()})
     if files:
@@ -454,6 +456,11 @@ def retention():
             if stamp < cut:
                 path.unlink()
                 removed += 1
+    system_pattern = re.compile(r'(?:(?:goamnezia|gotelegram|godns).*\.log|syslog|auth\.log|kern\.log|daemon\.log|messages|debug|user\.log|cron\.log|mail(?:\.log|\.info|\.warn|\.err)|ufw\.log|fail2ban\.log)\.[0-9]+(?:\.gz)?$')
+    for path in Path('/var/log').iterdir():
+        if not path.is_symlink() and path.is_file() and system_pattern.fullmatch(path.name) and path.stat().st_mtime < cut:
+            path.unlink()
+            removed += 1
     config = json.loads((ROOT / 'diagnostic-logging.json').read_text())
     # Keep the current state snapshot; trim timestamped check histories under their writer locks.
     histories = [(STATE / 'history.jsonl', STATE / 'history.lock')]
@@ -463,12 +470,13 @@ def retention():
             continue
         with lock.open('a+') as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
+            history_cut = time.time() - 30 * 86400 if path == STATE / 'history.jsonl' else cut
             kept = []
             for line in path.read_text().splitlines():
                 try:
                     item = json.loads(line)
                     stamp = item.get('t', item.get('last_check'))
-                    if isinstance(stamp, (float, int)) and stamp >= cut:
+                    if isinstance(stamp, (float, int)) and stamp >= history_cut:
                         kept.append(line)
                 except ValueError:
                     continue

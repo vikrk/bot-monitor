@@ -13,7 +13,7 @@ SECRET_PATTERNS = (
     re.compile(r"(?i)[\"']?(token|api[_-]?key|password|passwd|authorization)[\"']?(\s*[=:]\s*)[\"']?(?:Bearer\s+)?[^,\s\"'}]+"),
     re.compile(r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----"),
     re.compile(r"\b\d{5,15}:[A-Za-z0-9_-]{20,}\b"),
-    re.compile(r"\b(?:sk|ghp|github_pat|gsk)_[A-Za-z0-9_-]{12,}\b"),
+    re.compile(r"\b(?:sk|ghp|github_pat|gsk)[_-][A-Za-z0-9_-]{12,}\b"),
 )
 
 
@@ -51,11 +51,12 @@ def analyze(checks, history, router, logs):
             "truncated": True, "summary": encoded[:1100] + " ... " + encoded[-500:]
         }
     compact_history = []
-    for row in history[-12:]:
+    for row in [r for r in history if r.get('source') in ('check','scheduled')][-12:]:
         services = row.get("services", {})
         compact_history.append({
             "time": row.get("t"), "node": row.get("h"), "source": row.get("source"),
             "failures": row.get("failures", [])[:20], "skipped": row.get("skipped"),
+            "diagnostics": [{k: (str(v)[:360] if isinstance(v,str) else v) for k,v in d.items()} for d in row.get("diagnostics", [])[:6]],
             "services": {str(k): str(v)[:24] for k, v in list(services.items())[:20]},
         })
     router_text = json.dumps(router, ensure_ascii=False)
@@ -97,4 +98,3 @@ def analyze(checks, history, router, logs):
     if not isinstance(answer, str) or not answer.strip():
         raise RuntimeError("ИИ-провайдер вернул пустой ответ.")
     return answer.strip()[:MAX_OUTPUT]
-

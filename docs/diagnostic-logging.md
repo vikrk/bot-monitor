@@ -12,7 +12,7 @@ SSH-роутеры этим Linux-настройщиком не изменяют
 
 | Компонент | Настройки | Хранение |
 |---|---|---|
-| journald | постоянное хранение, Storage=persistent, MaxFileSec=1h, SystemMaxUse=1G, RuntimeMaxUse=1G | MaxRetentionSec=72h |
+| journald | persistent, Compress=yes, MaxFileSec=1h, лимит 1G, файл 16M, до 256 файлов, KeepFree=1G, RateLimitIntervalSec=0 | MaxRetentionSec=72h |
 | Xray в 3X-UI | access, error с уровнем info, dnsLog=true; в шаблоне панели и рабочем JSON | 72h |
 | Отдельная xray.service | те же параметры в JSON-конфиге | 72h |
 | nginx HTTP | JSON: время запроса, код, upstream, connect/header/response time, TLS, cipher и SNI | 72h |
@@ -27,7 +27,7 @@ AdGuard удаляет внутренние данные по своему ра�
 Неподдерживаемая схема интервалов даёт явную ошибку.
 
 В nginx сохраняются маршруты и существующие журналы; access_log off
-заменяется включённым диагностическим журналированием. URL, query string,
+заменяется включённым диагностическим журналированием. URI записывается без query string;
 Cookie и Authorization в новый HTTP-формат не записываются.
 Если нет stream-блока, SNI-прокси не создаётся. Без модуля ssl_preread
 SNI/TLS в stream-журнале указаны как "-". Настройщик не включает preread
@@ -80,7 +80,14 @@ check выполняет свежую проверку и сохраняет las
 status выбирает последнюю завершённую проверку; запрос статуса не меняет
 её время. Центральный таймер выполняет check на подключённых узлах,
 включая старые SPB/NL-инвентари. Ошибки SSH/RPC сохраняются в центре.
-История центра и агента — 72h; последний результат доступен и позже.
+История центра history.jsonl — 30 дней, как у действующего бота;
+отдельная история проверок агента — 72h. Последний результат доступен и позже.
+
+Параметры journald установлены в zz-rvkomi-retention.conf: файл имеет
+приоритет над старым 99-gotelegram.conf. Файлы GoTelegram не редактируются.
+Очистка также охватывает закрытые архивы старых путей /var/log/x-ui,
+/var/log/rvkomi-probes, /var/log/rvkomi-xray и указанные системные журналы
+в /var/log. Активные файлы, querylog AdGuard, базы и резервные копии не удаляются.
 
 Исходные настройки сохраняются в /var/backups/rvkomi-logging/<timestamp>/
 с правами root. Копии базы и конфигурации могут содержать секреты:

@@ -14,6 +14,12 @@ extra-nodes.json
 router-agent.json
 backup-webdav.json
 ai.json
+ai-admin-nodes.json
+ai-admin-policy.json
+ai-sni-probes.json
+home-targets.json
+diagnostic-logging.json
+read-only-check.json*
 *.pem
 *.key
 control-keys/

@@ -52,6 +52,8 @@ def label(identifier):
 
 
 def allowed_action(node, action):
+    if action == 'admin':
+        return node.get('transport') in ('local', 'ssh-agent')
     if action in ACTIONS:
         return True
     if action.startswith('querylog ') and re.fullmatch(r'[0-9a-f]{16}', action[9:]):
@@ -63,7 +65,7 @@ def allowed_action(node, action):
     return False
 
 
-def rpc(identifier, action):
+def rpc(identifier, action, payload=None):
     node = nodes()[identifier]
     if not allowed_action(node, action):
         raise ValueError('Действие не разрешено профилем узла')
@@ -77,13 +79,22 @@ def rpc(identifier, action):
                 '-o', 'GlobalKnownHostsFile=/dev/null', '-o', 'PasswordAuthentication=no',
                 '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=2',
                 node['user'] + '@' + node['address'], action]
-    result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180)
+    if action == 'admin':
+        if not isinstance(payload, dict) or (payload != {'op': 'describe'} and
+                (set(payload) != {'op', 'plan'} or payload.get('op') != 'apply')):
+            raise ValueError('Invalid admin RPC request')
+        encoded = json.dumps(payload)
+        if len(encoded.encode('utf-8')) > 16000: raise ValueError('Admin request too large')
+        result = subprocess.run(argv, input=encoded, capture_output=True, text=True, timeout=450)
+    else:
+        if payload is not None: raise ValueError('Unexpected RPC payload')
+        result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180)
     if result.returncode:
         raise RuntimeError('SSH/RPC не ответил корректно')
     if transport == 'ssh-shell':
         return shell_result(result.stdout, action)
     data = json.loads(result.stdout)
-    if not isinstance(data, dict) or (data.get('error') and not data.get('last_check')):
+    if not isinstance(data, dict) or (action != 'admin' and data.get('error') and not data.get('last_check')):
         raise RuntimeError('Агент отклонил запрос')
     return data
 

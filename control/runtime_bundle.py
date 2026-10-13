@@ -30,6 +30,7 @@ CONFIG_FILES = (
     'telegram.json', 'ai.json', 'control-nodes.json', 'extra-nodes.json',
     'router-agent.json', 'backup-webdav.json', 'backup-recovery.key',
     'fleet.json', 'main-profile.json',
+    'ai-admin-nodes.json', 'ai-admin-policy.json', 'ai-sni-probes.json', 'home-targets.json',
 )
 STATE_FILES = (
     'history.jsonl', 'telegram-control-state.json', 'extra-monitor-state.json',
@@ -37,6 +38,7 @@ STATE_FILES = (
     'router-baseline.json', 'router-alert-state.json', 'backup-state.json',
     'certificate-alert-state.json', 'maintenance-central.json',
     'generic-control-state.json', 'generic-monitor-state.json', 'main-last-check.json',
+    'ai-admin-audit.jsonl', 'read-only-check.json',
 )
 HOSTS = {'spb', 'nl', 'dns', 'www', 'space', 'latvia', 'fin', 'telegramm'}
 EXPECTED_INVENTORIES = {
@@ -80,12 +82,15 @@ def export_bundle(destination):
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     files = {}
     metadata = {'version': 1, 'created_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                'hosts': [], 'files': {}, 'monitor_interval_minutes': 2}
-    interval_dropin = TIMER_DROPIN
-    if interval_dropin.is_file() and not interval_dropin.is_symlink():
-        match = re.search(r'(?m)^OnUnitInactiveSec=(\d+)min\s*$', interval_dropin.read_text(encoding='utf-8'))
-        if match and 2 <= int(match.group(1)) <= 1440:
-            metadata['monitor_interval_minutes'] = int(match.group(1))
+                'hosts': [], 'files': {}, 'monitor_interval_minutes': 120}
+    timer_files = [Path('/etc/systemd/system/rvkomi-extra-monitor.timer')]
+    timer_files += sorted(TIMER_DROPIN.parent.glob('*.conf'))
+    for timer_file in timer_files:
+        if timer_file.is_file() and not timer_file.is_symlink():
+            for match in re.finditer(r'(?m)^OnUnitInactiveSec=(\d+)(min|h|s)?\s*$', timer_file.read_text(encoding='utf-8')):
+                minutes = int(match[1]) * {'min': 1, 'h': 60, 's': 1/60, None: 1/60}[match[2]]
+                if not isinstance(minutes, float) or minutes.is_integer():
+                    if 2 <= minutes <= 1440: metadata['monitor_interval_minutes'] = int(minutes)
     for name in CONFIG_FILES:
         source = ROOT / name
         if source.is_file() and not source.is_symlink():
@@ -129,6 +134,18 @@ def export_bundle(destination):
             cfg['key'] = f'/etc/rvkomi-watchdog/keys/{host}_ed25519'
             cfg['known_hosts'] = f'/etc/rvkomi-watchdog/known_hosts/{host}'
         files['etc/rvkomi-watchdog/fleet.json'] = (json.dumps(inventory, ensure_ascii=False, indent=2) + '\n').encode()
+    admin_raw = files.get('etc/rvkomi-watchdog/ai-admin-nodes.json')
+    if admin_raw:
+        admin_nodes = json.loads(admin_raw)
+        for host, cfg in admin_nodes.items():
+            if not re.fullmatch(r'[a-z][a-z0-9_]{0,23}', host) or not isinstance(cfg, dict):
+                fail('Invalid AI inventory in runtime bundle')
+            if cfg.get('transport') == 'local': continue
+            for field, folder in (('key', 'admin-keys'), ('known_hosts', 'admin-known-hosts')):
+                source = relative_runtime_path(cfg.get(field, ''))
+                files[f'etc/rvkomi-watchdog/{folder}/{host}'] = source.read_bytes()
+                cfg[field] = f'/etc/rvkomi-watchdog/{folder}/{host}'
+        files['etc/rvkomi-watchdog/ai-admin-nodes.json'] = json.dumps(admin_nodes, ensure_ascii=False).encode()
     for filename in ('control-nodes.json', 'extra-nodes.json'):
         raw = files.get('etc/rvkomi-watchdog/' + filename)
         if raw is None:
@@ -208,6 +225,8 @@ def safe_member_name(name):
         return bool(re.fullmatch(r'[a-z][a-z0-9_]{0,23}_ed25519', p.name))
     if len(p.parts) == 4 and p.parts[2] == 'known_hosts':
         return bool(re.fullmatch(r'[a-z][a-z0-9_]{0,23}', p.name))
+    if len(p.parts) == 4 and p.parts[2] in ('admin-keys', 'admin-known-hosts'):
+        return bool(re.fullmatch(r'[a-z][a-z0-9_]{0,23}', p.name))
     if len(p.parts) == 5 and p.parts[2] == 'router-tls':
         return bool(re.fullmatch(r'[a-z0-9.-]{1,253}', p.parts[3])) and p.name in ('fullchain.pem', 'privkey.pem')
     return False
@@ -286,12 +305,12 @@ def import_bundle(source):
             out.flush()
             os.fsync(out.fileno())
         os.chmod(dest, 0o600)
-    minutes = manifest.get('monitor_interval_minutes', 2)
+    minutes = manifest.get('monitor_interval_minutes', 120)
     if isinstance(minutes, int) and 2 <= minutes <= 1440:
         dropin = TIMER_DROPIN
         dropin.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         temporary = dropin.with_suffix('.conf.tmp')
-        temporary.write_text('[Timer]\nOnUnitInactiveSec=' + str(minutes) + 'min\n', encoding='utf-8')
+        temporary.write_text('[Timer]\nOnUnitInactiveSec=\nOnUnitInactiveSec=' + str(minutes) + 'min\n', encoding='utf-8')
         os.chmod(temporary, 0o644)
         os.replace(temporary, dropin)
     print('Конфигурация и ключи восстановлены с правами 0600.')

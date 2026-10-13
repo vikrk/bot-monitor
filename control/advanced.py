@@ -2,9 +2,10 @@
 """Owner-only operational UI, bounded history, encrypted WebDAV backups."""
 import re,urllib.parse,xml.etree.ElementTree as ET,base64,concurrent.futures,copy,datetime,fcntl,hashlib,hmac,importlib.util,json,os,secrets,shutil,sqlite3,subprocess,tarfile,tempfile,time,urllib.request,urllib.error
 from pathlib import Path
+import history_diagnostics
+import fleet
 BASE=Path('/usr/local/lib/rvkomi-watchdog');ROOT=Path('/etc/rvkomi-watchdog');STATE=Path('/var/lib/rvkomi-watchdog')
 HOSTS=['spb','nl','dns','www','space','latvia','fin','telegramm'];ALL=HOSTS;LABEL={'telegramm':'TELEGRAM'}
-import fleet
 if fleet.enabled():
  HOSTS=list(fleet.nodes());ALL=HOSTS;LABEL={h:n['name'] for h,n in fleet.nodes().items()}
 ACTIONS={'extras','certs','backup-export','maint-15','maint-30','maint-60','maint-off'}
@@ -36,13 +37,12 @@ def journal(host,result,source='check'):
  STATE.mkdir(mode=0o700,parents=True,exist_ok=True)
  report=result.get('report',{});services=report.get('services',result.get('services',{}));bad=result.get('failures',[])
  sample={'t':time.time(),'h':host,'source':source,'last_check':result.get('last_check'),'failures':bad,'services':services,'skipped':result.get('skipped')}
- for key in ('error','error_type','connection_error'):
-  if result.get(key):sample[key]=str(result[key])[:1000]
- if report:sample['report']=report
+ sample['schema_version']=2
+ if source in ('check','scheduled'):sample['diagnostics']=history_diagnostics.collect_diagnostics(result)
  if source=='ping':sample.update({k:result.get(k) for k in ['sent','received','average_ms','error']})
  if source=='resources':sample['metrics']=result
  with (STATE/'history.lock').open('a+') as f:
-  fcntl.flock(f,fcntl.LOCK_EX);p=STATE/'history.jsonl';cut=time.time()-72*3600
+  fcntl.flock(f,fcntl.LOCK_EX);p=STATE/'history.jsonl';cut=time.time()-30*86400
   rows=[]
   if p.exists():
    for line in p.read_text().splitlines():
@@ -123,6 +123,17 @@ def show_history(bot):
    p=ps[-1];a=p.get('average_ms');text+='; ping '+(f'{a:.2f} мс' if a is not None else 'нет ответа')
    if p.get('sent'):text+='; потеряно '+str(p['sent']-p.get('received',0))+'/'+str(p['sent'])
   lines.append(text)
+ details=[]
+ for r in sorted(rows,key=lambda x:x.get('last_check') or x['t'],reverse=True):
+  if r.get('source') not in ('check','scheduled') or not r.get('failures'):continue
+  failed=[d for d in r.get('diagnostics',[]) if d.get('ok') is False or d.get('error') or d.get('exit')]
+  if not failed:continue
+  moment=datetime.datetime.fromtimestamp(r.get('last_check') or r['t'],datetime.timezone(datetime.timedelta(hours=3))).strftime('%d.%m %H:%M МСК')
+  key=(r['h'],r.get('last_check') or r['t'])
+  if any(item[0]==key for item in details):continue
+  details.append((key,label(r['h'])+' '+moment+'\n'+'\n'.join(history_diagnostics.format_failure(d) for d in failed[:3])))
+  if len(details)>=4:break
+ if details:lines.append('\nПоследние ошибки с подробностями:\n'+'\n\n'.join(d[1] for d in details))
  lines.append('\nИстория хранится 30 дней. Пропуск ICMP сам по себе не означает отказ VPN.')
  bot.send('\n'.join(lines))
 def certs(bot):
@@ -173,7 +184,8 @@ def maintenance_tick(bot):
   except Exception:bot.send('⚠️ '+label(h)+': обслуживание завершено; контрольную проверку выполнить не удалось. Плановый мониторинг продолжает работу.')
 def webdav():
  c=read(ROOT/'backup-webdav.json')
- if c.get('url')!='https://vikrk.netcraze.pro/webdav/':raise RuntimeError('Unexpected WebDAV destination')
+ parsed=urllib.parse.urlsplit(c.get('url',''))
+ if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:raise RuntimeError('Configure your own HTTPS WebDAV destination')
  return c
 def dav_req(method,url,data=None,headers=None):
  c=webdav();h={'Authorization':'Basic '+base64.b64encode((c['username']+':'+c['password']).encode()).decode()};h.update(headers or {})
@@ -365,4 +377,3 @@ def main():
  elif arg.mode=='certificates':print(json.dumps(certificate_alerts(bot)))
  elif arg.mode=='resources':resources(bot)
 if __name__=='__main__':main()
-

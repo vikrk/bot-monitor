@@ -17,6 +17,10 @@ import uuid
 from pathlib import Path
 import fleet
 from node_agent import validate_profile
+from portable_admin import provision_profile
+
+AGENT_MODULES = ('node_agent.py', 'portable_admin.py', 'admin_executor.py', 'dns_admin.py',
+                 'adguard_filters.py', 'sni_admin.py', 'router_admin_executor.py', 'history_diagnostics.py')
 
 ROUTER_AGENT = '''#!/bin/sh
 case "$SSH_ORIGINAL_COMMAND" in status|check|extras) ;; *) exit 2 ;; esac
@@ -63,6 +67,40 @@ def save_local_profile(profile):
     temp.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding='utf-8')
     temp.chmod(0o600)
     temp.replace(path)
+    provision_profile(profile, path)
+
+
+def ai_policy_wizard(profile):
+    if input('Настроить полномочия ИИ? [y/N]: ').strip().lower() != 'y':
+        return profile
+    policy = {}
+    print('Перезапуски берутся только из разрешённого списка служб профиля. Изменения требуют подтверждения в боте.')
+    policy['routing'] = input('Разрешить добавление доменов в существующие proxy-правила 3X-UI? [y/N]: ').lower() == 'y'
+    filters = input('Разрешить точные правила и HTTPS-подписки AdGuard? [y/N]: ').lower() == 'y'
+    rewrite = input('Разрешить DNS-перезаписи AdGuard на заданный адрес relay? [y/N]: ').lower() == 'y'
+    if filters or rewrite:
+        policy['adguard_config'] = input('Абсолютный путь конфигурации AdGuardHome.yaml: ').strip()
+        policy['adguard_binary'] = input('Абсолютный путь исполняемого файла AdGuardHome: ').strip()
+        policy['adguard_filters'] = filters
+    if rewrite:
+        policy['dns_rewrites'] = {'enabled': True, 'target_ipv4': input('IPv4 сервера relay (FIN или другого, без значения по умолчанию): ').strip()}
+    if input('Разрешить изменения существующей SNI-карты nginx? [y/N]: ').lower() == 'y':
+        policy['sni'] = {'enabled': True,
+            'file': input('Абсолютный путь .conf с SNI-картой: ').strip(),
+            'map_variable': input('Имя переменной backend в map (без $): ').strip(),
+            'relay_ip': input('Публичный IPv4 этого SNI-сервера: ').strip(),
+            'port': number('Порт SNI-relay', 443, 1, 65535),
+            'probe_domains': [d.strip().lower() for d in input('Домены для TLS-проверки после изменений (через запятую): ').split(',') if d.strip()]}
+    if input('Это Entware-роутер: разрешить перезапуск конкретных init-скриптов? [y/N]: ').lower() == 'y':
+        scripts = {}
+        while True:
+            name = input('Имя службы (Enter закончить): ').strip()
+            if not name: break
+            scripts[name] = input('Абсолютный путь /opt/etc/init.d/...: ').strip()
+        policy['router_init_scripts'] = scripts
+    profile['ai_admin'] = policy
+    validate_profile(profile)
+    return profile
 
 
 def choose_node():
@@ -89,7 +127,7 @@ def profile_wizard(profile):
         print('\nПрофиль: службы=' + ', '.join(profile.get('services', [])) +
               '; HTTP=' + str(len(profile.get('urls', []))) + '; TLS=' + str(len(profile.get('tls', []))) +
               '; DNS=' + str(len(profile.get('dns_routes', []))))
-        print('1. Список контролируемых служб\n2. Добавить HTTP(S)-проверку\n3. Добавить TLS/CDN/origin\n4. Добавить DNS/DoH/DoT-маршрут\n5. Путь querylog AdGuard\n6. Разрешённые перезапуски\n7. Удалить проверку\n0. Сохранить профиль')
+        print('1. Список контролируемых служб\n2. Добавить HTTP(S)-проверку\n3. Добавить TLS/CDN/origin\n4. Добавить DNS/DoH/DoT-маршрут\n5. Путь querylog AdGuard\n6. Разрешённые перезапуски\n7. Удалить проверку\n8. Полномочия ИИ: Xray, AdGuard, DNS, SNI, Entware\n9. Планировщик: свежий check или status локального checker\n0. Сохранить профиль')
         choice = input('Выбор: ').strip()
         if choice == '0': return validate_profile(profile)
         if choice == '1':
@@ -133,6 +171,9 @@ def profile_wizard(profile):
                 selected = number('Номер удаляемой проверки', 1, 1, len(entries)) - 1
                 field, index, _ = entries[selected]
                 del profile[field][index]
+        elif choice == '8': profile = ai_policy_wizard(profile)
+        elif choice == '9':
+            profile['scheduled_status_only'] = input('Есть отдельный локальный checker: центральный таймер должен читать только status? [y/N]: ').lower() == 'y'
         else: print('Выберите пункт меню.'); continue
         validate_profile(profile)
 
@@ -204,8 +245,17 @@ def add_node(kind, existing=None):
             agent_path = agent_dir + '/node_agent.py'
             profile_path = agent_dir + '/profile.json'
             sftp.put(str(fleet.BASE / 'node_agent.py'), agent_path)
+            for module in AGENT_MODULES:
+                if module == 'node_agent.py': continue
+                destination = agent_dir + '/' + module
+                sftp.put(str(fleet.BASE / module), destination)
+                sftp.chmod(destination, 0o600)
             with sftp.open(profile_path, 'w') as out: out.write(json.dumps(profile, ensure_ascii=False).encode('utf-8'))
             sftp.chmod(profile_path, 0o600)
+            remote_exec(transport, shlex.quote(python) + ' -c ' + shlex.quote(
+                'import sys,json,pathlib;sys.path.insert(0,' + repr(agent_dir) + ');'
+                'from portable_admin import provision_profile;'
+                'p=pathlib.Path(' + repr(profile_path) + ');provision_profile(json.loads(p.read_text()),p)'))
             logging_setup = {'configured': False, 'reason': 'router logging is configured separately'}
             if kind == 'server':
                 if remote_exec(transport, 'id -u') == '0':
@@ -215,8 +265,8 @@ def add_node(kind, existing=None):
                     sftp.put(str(logging_source), logging_remote)
                     sftp.chmod(logging_remote, 0o600)
                     remote_exec(transport, 'command -v logrotate >/dev/null && ' + shlex.quote(python) +
-                        ' -c "import yaml" 2>/dev/null || { command -v apt-get >/dev/null && '
-                        'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq logrotate python3-yaml; }')
+                        ' -c "import yaml" 2>/dev/null && command -v dig >/dev/null || { command -v apt-get >/dev/null && '
+                        'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq logrotate python3-yaml dnsutils; }')
                     remote_exec(transport, 'install -d -m 0755 /usr/local/lib/rvkomi-watchdog && install -m 0755 ' +
                         shlex.quote(logging_remote) + ' /usr/local/lib/rvkomi-watchdog/configure_logging.py')
                     configured = remote_exec(transport, shlex.quote(python) +
@@ -303,6 +353,13 @@ def edit_profile():
     node = fleet.nodes()[identifier]
     if node['transport'] not in ('local', 'ssh-agent'): raise ValueError('Расширенный профиль требует стандартного Python-агента')
     profile = profile_wizard(node.get('profile', default_profile()))
+    if node['transport'] == 'local':
+        save_local_profile(profile)
+        data = fleet.load(); data['nodes'][identifier]['profile'] = profile; fleet.save(data)
+        print('Локальный профиль и полномочия ИИ сохранены.')
+        return
+    if profile.get('ai_admin', {}) != node.get('profile', {}).get('ai_admin', {}):
+        raise ValueError('Новые полномочия ИИ задайте при переподключении узла (пункт 14), с административным SSH-доступом.')
     encoded = base64.urlsafe_b64encode(json.dumps(profile, ensure_ascii=False).encode()).decode()
     fleet.rpc(identifier, 'configure ' + encoded)
     data = fleet.load()
@@ -331,6 +388,8 @@ def adopt_legacy():
             if identifier in data['nodes']: raise ValueError('Имя legacy-узла уже существует')
             data['nodes'][identifier] = {**cfg, 'name': identifier.upper(), 'user': cfg.get('user', 'root'),
                 'kind': 'server', 'transport': 'legacy', 'profile': default_profile()}
+            if identifier == 'spb':
+                data['nodes'][identifier]['profile']['scheduled_status_only'] = True
     fleet.save(data)
     print('Списки из резервной копии добавлены как существующие агенты. Их проверки сохранены.')
 
@@ -339,6 +398,17 @@ def main():
     if os.geteuid() != 0: raise SystemExit('Запустите: sudo fleetctl')
     if len(sys.argv) == 3 and sys.argv[1] == '--init': register_main(sys.argv[2]); return
     if len(sys.argv) == 2 and sys.argv[1] == '--adopt-legacy': adopt_legacy(); return
+    if len(sys.argv) == 2 and sys.argv[1] == '--configure-main':
+        node = fleet.nodes()['main']
+        profile = node.get('profile', default_profile())
+        print('Службы управляющего сервера: ' + ', '.join(profile.get('services', [])))
+        raw = input('Разрешённые перезапуски для ИИ (через запятую; Enter оставить текущие): ').strip()
+        if raw: profile['allowed_restarts'] = [s.strip() for s in raw.split(',') if s.strip()]
+        profile = ai_policy_wizard(profile)
+        validate_profile(profile)
+        save_local_profile(profile)
+        data = fleet.load(); data['nodes']['main']['profile'] = profile; fleet.save(data)
+        return
     if not fleet.enabled(): register_main(input('Название управляющего сервера: ').strip())
     while True:
         print('\nRVKOMI — ' + fleet.load()['nodes'].get('main', {}).get('name', 'контроллер'))

@@ -9,15 +9,20 @@ import time
 import fleet
 import advanced
 import ai_diagnostics
+import ai_admin
+import history_diagnostics
 
 COMMANDS = [('menu', 'Меню серверов'), ('status', 'Последние результаты'), ('check_all', 'Свежая проверка всех узлов'),
             ('resources', 'Ресурсы всех узлов'), ('history', 'История проверок'), ('ai_all', 'ИИ-анализ всех узлов'),
+            ('ai_change', 'План разрешённого изменения с подтверждением'),
+            ('dns_sni_check', 'Проверить настроенные DNS и SNI-маршруты'), ('ping', 'PING подключённых узлов'),
             ('cancel', 'Отменить предложения перезапуска'), ('help', 'Настройка и команды')]
 HELP = ('/menu — подключённые узлы\n/status — последние результаты\n/check_all — свежие проверки\n'
         '/resources — ресурсы\n/history — история\n/ai_all — ИИ-диагностика\n/cancel — отмена предложений\n\n'
         'Добавление сервера, роутера и изменение профилей: sudo fleetctl на управляющем сервере. '
         'Проверяются только настроенные службы и маршруты. Перезапуск доступен только для служб из разрешённого списка '
-        'и требует вашего подтверждения. Автоматического reboot нет.')
+        'и требует вашего подтверждения. /ai_change — план изменений Xray/AdGuard/DNS/SNI по полномочиям узла. '
+        '/dns_sni_check — проверка настроенных DNS/SNI-узлов. Автоматического reboot нет.')
 
 
 def run(tc, mode):
@@ -26,6 +31,8 @@ def run(tc, mode):
             rows = [[{'text': '📊 Статус', 'callback_data': 'fleetmenu:status'},
                      {'text': '🔎 Проверить все', 'callback_data': 'fleetmenu:check_all'}],
                     [{'text': '🧠 ИИ-анализ всех', 'callback_data': 'fleetmenu:ai_all'}]]
+            rows.append([{'text': '🛠 ИИ: предложить изменение', 'callback_data': 'fleetmenu:ai_change'},
+                         {'text': '🌐 DNS / SNI', 'callback_data': 'fleetmenu:dns_sni_check'}])
             for identifier, node in fleet.nodes().items():
                 rows.append([{'text': ('📡 ' if node['kind'] == 'router' else '🖥 ') + node['name'],
                               'callback_data': 'fleetnode:' + identifier}])
@@ -68,6 +75,9 @@ def run(tc, mode):
                 except Exception:
                     self.send('⚠️ ' + fleet.label(identifier) + ': проверку получить не удалось. Проверьте SSH-доступ и профиль.')
 
+        def run_checks(self, identifiers, fresh=True):
+            return self.checks(identifiers, fresh)
+
         def resources(self):
             lines = ['⚙️ Ресурсы подключённых узлов']
             for identifier in fleet.nodes():
@@ -87,6 +97,10 @@ def run(tc, mode):
                           and row.get('source') in ('check', 'scheduled') and not row.get('skipped')]
                 ok = sum(not row.get('failures') for row in checks)
                 lines.append(fleet.label(identifier) + ': ' + (str(ok) + '/' + str(len(checks)) + ' проверок успешно' if checks else 'данных пока нет'))
+                failed = [r for r in reversed(checks) if r.get('failures')]
+                if failed:
+                    details = failed[0].get('diagnostics', [])
+                    lines.extend(history_diagnostics.format_failure(row) for row in details[:3])
             self.send('\n'.join(lines))
 
         def logs(self, identifier):
@@ -110,7 +124,8 @@ def run(tc, mode):
                     try: logs.append(node['name'] + ': ' + json.dumps(fleet.rpc(identifier, 'logs'), ensure_ascii=False))
                     except Exception: logs.append(node['name'] + ': журналы недоступны')
             history = [row for row in advanced.history() if row.get('h') in fleet.nodes()][-160:]
-            try: result = ai_diagnostics.analyze(checks, history, {}, '\n'.join(logs))
+            router = advanced.read(fleet.STATE / 'router-state.json')
+            try: result = ai_diagnostics.analyze(checks, history, router, '\n'.join(logs))
             except Exception as exc: result = str(exc)
             self.send('🧠 ИИ-анализ всех узлов\n\n' + result + '\n\nПредложения ИИ не исполняются автоматически. Перезапуски — через кнопки разрешённых служб.')
 
@@ -137,6 +152,9 @@ def run(tc, mode):
         def callback(self, query):
             if not tc.authorized_callback(query, self.owner): return
             kind, _, value = query.get('data', '').partition(':')
+            if kind in ('aiconfirm', 'aiabort'):
+                ai_admin.callback(self, query, kind, value)
+                return
             try:
                 if kind == 'fleetmenu':
                     self.answer(query['id'], 'Принято'); self.handle_command(value, time.time())
@@ -177,6 +195,19 @@ def run(tc, mode):
             elif command == 'check_all': self.start_checks(list(fleet.nodes()))
             elif command == 'resources': self.executor.submit(self.resources)
             elif command == 'history': self.executor.submit(self.history)
+            elif command == 'ai_change': ai_admin.begin(self)
+            elif command == 'dns_sni_check':
+                identifiers = [h for h,n in fleet.nodes().items() if n.get('profile', {}).get('dns_routes') or
+                               n.get('profile', {}).get('ai_admin', {}).get('sni') or
+                               n.get('profile', {}).get('ai_admin', {}).get('dns_rewrites') or
+                               n.get('profile', {}).get('ai_admin', {}).get('adguard_filters')]
+                if identifiers: self.start_checks(identifiers)
+                else: self.send('DNS/SNI-профили пока не настроены. Добавьте их через fleetctl.')
+            elif command == 'ping':
+                targets = [(n['name'],n['address']) for n in fleet.nodes().values() if n['transport'] != 'local']
+                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                    results = list(pool.map(tc.ping_target, targets))
+                self.send('📡 PING\n' + '\n'.join(str(r) for r in results)[:3500])
             elif command == 'ai_all':
                 with self.lock:
                     if time.time() - self.state.get('last_ai_request', 0) < 60:
@@ -184,9 +215,14 @@ def run(tc, mode):
                     self.state['last_ai_request'] = time.time(); self.save()
                 self.executor.submit(self.ai)
             elif command == 'cancel':
+                self.state.setdefault('cancel_generation', 0)
                 with self.lock:
+                    pending = self.state.pop('ai_admin_pending', {})
+                    self.state.pop('ai_admin_waiting', None)
+                    self.state['cancel_generation'] += 1
                     self.state['repairs'] = {}; self.save()
-                self.send('Неподтверждённые перезапуски отменены.')
+                if pending.get('message_id'): self.remove_buttons(pending['message_id'])
+                self.send('Неподтверждённые планы ИИ и перезапуски отменены.')
             else: self.send('Используйте /menu или /help.')
 
         def poll(self):
@@ -232,6 +268,19 @@ def monitor(tc):
         def one(identifier):
             if advanced.read(fleet.STATE / 'maintenance-central.json').get(identifier, {}).get('until', 0) > time.time():
                 return identifier, {'skipped': 'maintenance'}
+            if fleet.nodes()[identifier].get('profile', {}).get('scheduled_status_only'):
+                try:
+                    result = fleet.status(identifier)
+                    if result.get('connection_error'):
+                        return identifier, {'last_check': time.time(), 'failures': ['local-checker-status-unavailable'],
+                                            'error': result['connection_error']}
+                    if not result.get('last_check'):
+                        return identifier, {'skipped': 'local-checker-has-no-result'}
+                    if result['last_check'] <= state['hosts'].get(identifier, {}).get('last_check', 0):
+                        return identifier, {'skipped': 'local-checker-result-unchanged'}
+                    return identifier, result
+                except Exception:
+                    return identifier, {'last_check': time.time(), 'failures': ['local-checker-status-unavailable']}
             try: return identifier, fleet.check(identifier)
             except Exception: return identifier, {'failures': ['ssh-or-check-unavailable'], 'last_check': time.time()}
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:

@@ -12,13 +12,13 @@ DROPIN = Path('/etc/systemd/system/rvkomi-extra-monitor.timer.d/override.conf')
 def main():
     if os.geteuid() != 0:
         raise SystemExit('Запустите от root: sudo rvkomi-monitor-interval')
-    raw = input('Интервал мониторинга в минутах (2–1440) [2]: ').strip() or '2'
+    raw = input('Интервал мониторинга в минутах (2–1440) [120]: ').strip() or '120'
     if not re.fullmatch(r'\d{1,4}', raw) or not 2 <= int(raw) <= 1440:
         raise SystemExit('Введите целое число от 2 до 1440 минут.')
     minutes = int(raw)
     DROPIN.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     temporary = DROPIN.with_suffix('.conf.tmp')
-    temporary.write_text('[Timer]\nOnUnitInactiveSec=' + str(minutes) + 'min\n', encoding='utf-8')
+    temporary.write_text('[Timer]\nOnUnitInactiveSec=\nOnUnitInactiveSec=' + str(minutes) + 'min\n', encoding='utf-8')
     os.chmod(temporary, 0o644)
     os.replace(temporary, DROPIN)
     subprocess.run(['systemctl', 'daemon-reload'], check=True)

@@ -20,7 +20,8 @@ def main():
     except (OSError, ValueError):
         pass
     base = input("HTTPS URL API [https://api.openai.com/v1]: ").strip() or "https://api.openai.com/v1"
-    model = input("Модель: ").strip()
+    default_model = old.get("model") or "gpt-4.1-mini"
+    model = input("Модель [" + default_model + "]: ").strip() or default_model
     key = getpass.getpass("API-ключ (ввод скрыт; Enter оставить прежний): ").strip()
     if not key:
         key = str(old.get("api_key", ""))
@@ -49,4 +50,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -97,7 +97,10 @@ def tick(bot):
   previous.update(home_seen=d['checks_time'],home_bad=bad);atomic(STATE/'router-alert-state.json',previous)
 
 CTX=ssl.create_default_context()
-TARGETS={'SPB':'https://spb.vikrk.online/','NL':'https://my393.rvkomi.space/','DNS':'https://rvkomi.ru/dns-query','WWW':'https://www.davpon.online/','SPACE':'https://rvkomi.space/','LATVIA':'https://vikrk.online/','FIN':'https://davpon.online/','TELEGRAM':'https://rvkomi.online/','CDN SPB':'https://edge.vikrk.online/health','DNS CDN':'https://doh.rvkomi.ru/dns-query'}
+def configured_targets():
+ try:return json.loads((Path('/etc/rvkomi-watchdog')/'home-targets.json').read_text())
+ except (OSError,ValueError):return {}
+TARGETS=configured_targets()
 OPENER=urllib.request.build_opener(urllib.request.ProxyHandler({}),urllib.request.HTTPSHandler(context=CTX))
 def dns_packet(name):
  i=random.randrange(65536);q=b''.join(bytes([len(x)])+x.encode() for x in name.split('.'))+b'\0'+struct.pack('!HH',1,1)
@@ -118,4 +121,3 @@ def check(label,url):
  except urllib.error.HTTPError as e:r.update(http=e.code,tls_verified=True,error='HTTP '+str(e.code))
  except Exception as e:r['error']=type(e).__name__
  r['total_ms']=round((time.monotonic()-st)*1000,1);return r
-

@@ -26,12 +26,22 @@ from pathlib import Path
 
 def validate_profile(profile):
     if not isinstance(profile, dict): raise ValueError('Invalid profile')
+    from portable_admin import validate_policy
+    validate_policy(profile.get('ai_admin', {}))
+    if type(profile.get('scheduled_status_only', False)) is not bool:
+        raise ValueError('Invalid scheduled checker mode')
     for field in ('services', 'allowed_restarts'):
         items = profile.get(field, [])
         if not isinstance(items, list) or len(items) > 32 or any(not isinstance(s, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]{0,100}', s) for s in items):
             raise ValueError('Invalid service list')
     if not set(profile.get('allowed_restarts', [])) <= set(profile.get('services', [])):
         raise ValueError('Restart must refer to a monitored service')
+    for service in profile.get('allowed_restarts', []):
+        name = re.sub(r'\.(?:service|target)$', '', service.lower())
+        name = name.removeprefix('systemd-')
+        if name in {'reboot', 'poweroff', 'halt', 'shutdown', 'kexec', 'suspend', 'hibernate',
+                    'hybrid-sleep', 'suspend-then-hibernate'}:
+            raise ValueError('OS power operations are not allowed as service repairs')
     for field in ('urls', 'tls', 'dns_routes'):
         if not isinstance(profile.get(field, []), list) or len(profile.get(field, [])) > 32: raise ValueError('Too many probes')
     if len(profile.get('urls', [])) + len(profile.get('tls', [])) > 24: raise ValueError('Limit: 24 HTTP/TLS probes')
@@ -214,6 +224,17 @@ def querylog(profile, token):
 
 
 def check(profile):
+    # The SNI executor updates a separate, root-provisioned postcheck domain list.
+    sni = profile.get('ai_admin', {}).get('sni')
+    if sni:
+        probe_file = Path(profile.get('_profile_path', '')).with_name('ai-sni-probes.json')
+        values = json.loads(probe_file.read_text())['sni_relay_checks']['domains']
+        if len(values) > 30 or any(not re.fullmatch(r'(?:[a-z0-9-]+\.)+[a-z0-9-]+', d) for d in values):
+            raise ValueError('Invalid SNI postcheck domain list')
+        profile = json.loads(json.dumps(profile))
+        for domain in values:
+            profile.setdefault('tls', []).append({'label': 'SNI ' + domain, 'host': sni['relay_ip'],
+                'port': sni.get('port', 443), 'server_name': domain})
     metrics = resources(profile)
     services = metrics['services']
     failures = [name for name, ok in services.items() if not ok]
@@ -223,7 +244,12 @@ def check(profile):
     def network_probe(task):
         kind, item = task
         try: outcome = http_probe(item) if kind == 'http' else tls_probe(item)
-        except Exception as exc: outcome = {'ok': False, 'label': item['label'], 'host': item.get('host', ''), 'error': type(exc).__name__}
+        except Exception as exc:
+            import history_diagnostics
+            outcome = {'ok': False, 'label': item['label'], 'host': item.get('host', ''),
+                       'error': type(exc).__name__, 'error_detail': history_diagnostics.text(str(exc))}
+            if isinstance(exc, urllib.error.HTTPError): outcome['http_status'] = exc.code
+            if isinstance(exc, OSError) and exc.errno is not None: outcome['exit_code'] = exc.errno
         return kind, item, outcome
     tasks = [('http', item) for item in profile.get('urls', [])] + [('tls', item) for item in profile.get('tls', [])]
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
@@ -315,10 +341,16 @@ def main():
     args = parser.parse_args()
     profile_path = Path(args.profile)
     profile = validate_profile(json.loads(profile_path.read_text(encoding='utf-8')))
+    profile['_profile_path'] = str(profile_path)
     words = shlex.split(os.environ['SSH_ORIGINAL_COMMAND']) if 'SSH_ORIGINAL_COMMAND' in os.environ else args.operation
     action = words[0] if words else ''
     cache = Path(profile.get('state_path', str(profile_path.with_name('last-check.json'))))
-    if words == ['status']:
+    if words == ['admin']:
+        from portable_admin import handle
+        raw = sys.stdin.buffer.read(16001)
+        if len(raw) > 16000: raise ValueError('Admin request too large')
+        result = handle(json.loads(raw), profile, profile_path)
+    elif words == ['status']:
         candidates = []
         for path in (cache, profile_path.with_name('read-only-check.json')):
             try:
@@ -363,6 +395,8 @@ def main():
         result = {'restarted': restart.returncode == 0, 'service': words[1]}
     elif len(words) == 2 and action == 'configure' and len(words[1]) <= 48000 and re.fullmatch(r'[A-Za-z0-9_=-]+', words[1]):
         updated = validate_profile(json.loads(base64.urlsafe_b64decode(words[1])))
+        if updated.get('ai_admin', {}) != profile.get('ai_admin', {}):
+            raise ValueError('AI capabilities must be provisioned through administrative SSH setup')
         if 'state_path' in profile: updated['state_path'] = profile['state_path']
         else: updated.pop('state_path', None)
         temporary = profile_path.with_suffix('.json.tmp')
