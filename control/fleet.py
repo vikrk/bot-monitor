@@ -111,21 +111,36 @@ def rescan(identifier):
         node = data['nodes'][identifier]
         if not node.get('enabled', True) or node['transport'] not in ('local', 'ssh-agent'):
             raise ValueError('Пересканирование доступно только для Linux-узлов с актуальным агентом')
-        discovered = rpc(identifier, 'discover').get('services')
+        discovery = rpc(identifier, 'discover')
+        discovered = discovery.get('services')
         if not isinstance(discovered, list) or any(s not in DISCOVERY_SERVICES for s in discovered):
             raise ValueError('Неверный ответ обнаружения служб')
         profile = json.loads(json.dumps(node.get('profile', {})))
         old = profile.get('services', [])
         added = [s for s in dict.fromkeys(discovered) if s not in old]
         profile['services'] = old + added
+        added_probes = 0
+        for field in ('tls', 'urls', 'dns_routes'):
+            for item in discovery.get(field, []):
+                if not isinstance(item, dict) or not str(item.get('discovery_id', '')).startswith('auto:'):
+                    raise ValueError('Invalid discovered probe')
+                current = profile.setdefault(field, [])
+                index = next((i for i, old_item in enumerate(current) if old_item.get('discovery_id') == item['discovery_id']), None)
+                if index is not None: current[index] = item
+                elif (field == 'dns_routes' and len(current) < 32) or (field != 'dns_routes' and len(profile.get('urls', [])) + len(profile.get('tls', [])) < 24):
+                    current.append(item); added_probes += 1
+        profile['discovered_components'] = discovery.get('components', [])
+        profile['discovered_domains'] = discovery.get('domains', [])
+        profile['discovery_notes'] = discovery.get('notes', [])
         validate_profile(profile)
-        if added:
+        if profile != node.get('profile', {}):
             encoded = base64.urlsafe_b64encode(json.dumps(profile).encode()).decode()
             if not rpc(identifier, 'configure ' + encoded).get('configured'):
                 raise RuntimeError('Агент не сохранил профиль')
             node['profile'] = profile
             save(data)
-        return {'services': profile['services'], 'added': added}
+        return {'services': profile['services'], 'added': added, 'added_probes': added_probes,
+                'components': profile['discovered_components'], 'notes': profile['discovery_notes']}
 
 
 def shell_result(text, action):

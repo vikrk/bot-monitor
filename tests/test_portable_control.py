@@ -76,9 +76,28 @@ class PortableControlTests(unittest.TestCase):
         with patch.object(fleet, 'rpc', side_effect=[{'services': ['x-ui']}, RuntimeError('failed')]):
             with self.assertRaises(RuntimeError): fleet.rescan('main')
         self.assertEqual(fleet.load(), original)
+
         with patch.object(fleet, 'rpc', return_value={'services': ['arbitrary-service']}):
             with self.assertRaises(ValueError): fleet.rescan('main')
         self.assertEqual(fleet.load(), original)
+
+    def test_rescan_refreshes_auto_tls_preserves_manual_routes_and_permissions(self):
+        data = fleet.load()
+        profile = data['nodes']['main']['profile']
+        manual = {'label':'manual','host':'manual.example.com','port':443}
+        profile['tls'] = [manual, {'discovery_id':'auto:panel:tls','label':'Panel','host':'127.0.0.1','port':2053,'server_name':'panel.example.com'}]
+        fleet.save(data)
+        discovery = {'services':['nginx'], 'tls':[{'discovery_id':'auto:panel:tls','label':'Panel','host':'127.0.0.1','port':8443,'server_name':'panel.example.com'}],
+                     'domains':['panel.example.com'], 'dns_routes':[{'discovery_id':'auto:adguard-doh','id':'d_adguard','label':'AdGuard DoH','transport':'doh','endpoint':'https://dns.example.com/dns-query','count':1}]}
+        with patch.object(fleet, 'rpc', side_effect=[discovery, {'configured':True}]): fleet.rescan('main')
+        updated = fleet.nodes()['main']['profile']
+        self.assertEqual(updated['tls'][0], manual)
+        self.assertEqual(updated['tls'][1]['port'],8443)
+        self.assertEqual(updated['allowed_restarts'], profile['allowed_restarts'])
+        self.assertEqual(updated['dns_routes'][0]['transport'],'doh')
+        with patch.object(fleet, 'rpc', return_value=discovery) as rpc:
+            self.assertEqual(fleet.rescan('main')['added_probes'],0)
+            self.assertEqual(rpc.call_count,1)
 
     def test_discovery_includes_loaded_inactive_panel(self):
         def probe(args, timeout):

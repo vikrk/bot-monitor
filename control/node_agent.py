@@ -42,6 +42,19 @@ def validate_profile(profile):
     validate_policy(profile.get('ai_admin', {}))
     if type(profile.get('scheduled_status_only', False)) is not bool:
         raise ValueError('Invalid scheduled checker mode')
+    from endpoint_discovery import domain
+    if not isinstance(profile.get('discovered_domains', []), list) or len(profile.get('discovered_domains', [])) > 24 or any(not domain(d) for d in profile.get('discovered_domains', [])):
+        raise ValueError('Invalid discovered domains')
+    for field in ('discovered_components', 'discovery_notes'):
+        if not isinstance(profile.get(field, []), list) or len(profile.get(field, [])) > 24:
+            raise ValueError('Invalid discovery metadata')
+    for component in profile.get('discovered_components', []):
+        if not isinstance(component, dict) or not isinstance(component.get('label'), str) or len(component['label']) > 80 or component.get('security') not in ('tls', 'reality', 'none') or not isinstance(component.get('port'), int) or not 1 <= component['port'] <= 65535:
+            raise ValueError('Invalid discovered component')
+        if component.get('server_name') and not domain(component['server_name']): raise ValueError('Invalid component domain')
+        if not isinstance(component.get('expires', ''), str) or len(component.get('expires', '')) > 80: raise ValueError('Invalid certificate expiry')
+    if any(not isinstance(note, str) or len(note) > 300 for note in profile.get('discovery_notes', [])):
+        raise ValueError('Invalid discovery note')
     for field in ('services', 'allowed_restarts'):
         items = profile.get(field, [])
         if not isinstance(items, list) or len(items) > 32 or any(not isinstance(s, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]{0,100}', s) for s in items):
@@ -121,19 +134,25 @@ def tls_probe(item):
             cert = secure.getpeercert()
             days = (ssl.cert_time_to_seconds(cert['notAfter']) - time.time()) / 86400
             return {'ok': days > 0, 'tls': secure.version(), 'alpn': secure.selected_alpn_protocol(),
+                    'server_name': item.get('server_name') or item['host'], 'cert_expires': cert['notAfter'],
                     'fingerprint': hashlib.sha256(secure.getpeercert(binary_form=True)).hexdigest(),
                     'cert_days_remaining': round(days, 1), 'host': item['host'], 'port': int(item.get('port', 443)),
                     'label': item['label']}
 
 
 def http_probe(item):
+    def cdn_hint(headers):
+        if headers.get('CF-Ray'): return 'Cloudflare (признак CF-Ray)'
+        if headers.get('X-Amz-Cf-Pop'): return 'CloudFront (признак X-Amz-Cf-Pop)'
+        if headers.get('X-Served-By') and headers.get('X-Cache'): return 'CDN/proxy (признаки X-Served-By и X-Cache)'
+        return 'не подтверждён'
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         with opener.open(urllib.request.Request(item['url'], headers={'User-Agent': 'RVKOMI-monitor/1'}), timeout=10) as response:
             response.read(1024)
-            return {'ok': response.status in item.get('codes', [200]), 'http_status': response.status}
+            return {'ok': response.status in item.get('codes', [200]), 'http_status': response.status, 'cdn_hint': cdn_hint(response.headers)}
     except urllib.error.HTTPError as error:
-        return {'ok': error.code in item.get('codes', [200]), 'http_status': error.code}
+        return {'ok': error.code in item.get('codes', [200]), 'http_status': error.code, 'cdn_hint': cdn_hint(error.headers)}
 
 
 def packet(name):
@@ -290,6 +309,15 @@ def check(profile):
             if not route.get('querylog_node'):
                 report['notes'].append(route['label'] + ': ответы ' + str(item['responses']) + '/' + str(item['expected']) +
                     '; подтверждение прихода в журнал AdGuard не настроено.')
+    from endpoint_discovery import domain_status
+    for name in profile.get('discovered_domains', []):
+        try: outcome = domain_status(name)
+        except Exception: outcome = {'ok': False, 'addresses': [], 'cnames': [], 'cdn': 'не подтверждён'}
+        report['groups'].setdefault('DNS домены', {})[name] = outcome
+        if not outcome['ok']: failures.append('dns:' + name)
+        report['notes'].append(name + ': A/AAAA ' + (', '.join(outcome['addresses']) or 'нет ответа') +
+            '; CNAME ' + (', '.join(outcome['cnames']) or 'нет') + '; CDN ' + outcome['cdn'])
+    report['notes'].extend(profile.get('discovery_notes', []))
     return {'last_check': time.time(), 'services': services, 'failures': failures, 'read_only': True,
             'report': report, 'resources': metrics, 'dns_results': dns_results}
 
@@ -363,7 +391,8 @@ def main():
         if len(raw) > 16000: raise ValueError('Admin request too large')
         result = handle(json.loads(raw), profile, profile_path)
     elif words == ['discover']:
-        result = {'services': discover_services()}
+        from endpoint_discovery import discover
+        result = {'services': discover_services(), **discover()}
     elif words == ['status']:
         candidates = []
         for path in (cache, profile_path.with_name('read-only-check.json')):

@@ -5,7 +5,7 @@ if ! grep -qiE 'ubuntu|debian' /etc/os-release; then echo "Требуется Ub
 SOURCE_DIR="$(cd "$(dirname "$0")" && pwd)/control"
 BASE=/usr/local/lib/rvkomi-watchdog
 ROOT=/etc/rvkomi-watchdog
-for file in telegram-control.py fleet.py fleetctl.py node_agent.py generic_control.py configure_logging.py ai_admin.py portable_admin.py admin_executor.py history_diagnostics.py dns_admin.py adguard_filters.py sni_admin.py; do
+for file in telegram-control.py fleet.py fleetctl.py node_agent.py endpoint_discovery.py generic_control.py configure_logging.py ai_admin.py portable_admin.py admin_executor.py history_diagnostics.py dns_admin.py adguard_filters.py sni_admin.py; do
     [ -f "$SOURCE_DIR/$file" ] || { echo "Не найден $SOURCE_DIR/$file" >&2; exit 1; }
 done
 echo "Будут установлены: Telegram-контрольный бот, локальный мониторинг, SSH-агент для подключаемых узлов и планировщики."

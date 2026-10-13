@@ -50,6 +50,10 @@ def run(tc, mode):
             text = node['name'] + ' — ' + node['address'] + '\n'
             text += 'Службы: ' + (', '.join(profile.get('services', [])) or 'не настроены') + '\n'
             text += 'HTTP: ' + str(len(profile.get('urls', []))) + '; TLS: ' + str(len(profile.get('tls', []))) + '; DNS: ' + str(len(profile.get('dns_routes', [])))
+            for component in profile.get('discovered_components', []):
+                text += '\n' + component['label'] + ': ' + component['security'].upper() + ' :' + str(component['port'])
+                if component.get('server_name'): text += ' · ' + component['server_name']
+                if component.get('expires'): text += '\nСертификат до ' + component['expires']
             rows = [[{'text': '🔎 Проверить', 'callback_data': 'fleetcheck:' + identifier}]]
             if node['transport'] in ('local', 'ssh-agent'):
                 rows.append([{'text': '🔄 Пересканировать службы', 'callback_data': 'fleetrescan:' + identifier}])
@@ -74,7 +78,7 @@ def run(tc, mode):
                     if not fresh and not result.get('last_check'):
                         self.send(node['name'] + ': SSH доступен; плановая проверка ещё не выполнялась.')
                     else:
-                        if not fresh: result = {key: value for key, value in result.items() if key != 'report'}
+                        if not fresh: self.send(node['name'] + ': сохранённый результат от ' + time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(result['last_check'])))
                         self.send(tc.format_result(node['name'], result))
                 except Exception:
                     self.send('⚠️ ' + fleet.label(identifier) + ': проверку получить не удалось. Проверьте SSH-доступ и профиль.')
@@ -159,7 +163,8 @@ def run(tc, mode):
                     result = fleet.rescan(identifier)
                     self.send(fleet.label(identifier) + ': добавлены службы — ' +
                               (', '.join(result['added']) or 'новых служб нет') +
-                              '. Маршруты и разрешения на изменения сохранены.')
+                              '; новых HTTP/TLS/DNS-проверок: ' + str(result.get('added_probes', 0)) +
+                              '. Ручные проверки и разрешения сохранены.')
                     self.checks([identifier])
                 except Exception:
                     self.send(fleet.label(identifier) + ': пересканирование не завершено. '

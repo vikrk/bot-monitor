@@ -191,7 +191,7 @@ def format_cdn_tls_checks(checks):
     for key,v in checks.items():
         address=str(v.get('host','?'))+':'+str(v.get('port',443))
         if v.get('ok'):
-            detail=str(v.get('tls','TLS'))+'; ALPN '+str(v.get('alpn') or 'нет')+'; имя и цепочка сертификата ✅; до окончания '+str(v.get('cert_days_remaining','?'))+' дн.'
+            detail=str(v.get('tls','TLS'))+'; SNI '+str(v.get('server_name') or '?')+'; ALPN '+str(v.get('alpn') or 'нет')+'; имя и цепочка сертификата ✅; до окончания '+str(v.get('cert_days_remaining','?'))+' дн.'
         else:detail=errors.get(v.get('error'),str(v.get('error','нет ответа')))
         lines.append(('✅ ' if v.get('ok') else '❌ ')+v.get('label',key)+' TLS '+address+' — '+detail)
     if checks:lines.append('Сбой CDN/TLS сам по себе не запускает перезапуск служб.')
@@ -222,6 +222,9 @@ def format_result(host,result):
     lines.extend(result.get('report',{}).get('notes',[]))
     lines.extend(format_relay_checks(checks))
     lines.extend(format_cdn_tls_checks(result.get('report',{}).get('cdn_tls',{}) if 'report' in result else result.get('cdn_tls',{})))
+    for label, outcome in result.get('report', {}).get('groups', {}).get('HTTP(S)', {}).items():
+        if 'cdn_hint' in outcome: lines.append(label + ': HTTP ' + str(outcome.get('http_status', '?')) + '; CDN ' + outcome['cdn_hint'])
+    lines.extend(str(note)[:350] for note in result.get('report', {}).get('notes', [])[:6])
     return '\n'.join(lines)[:3700]
 
 class Bot:

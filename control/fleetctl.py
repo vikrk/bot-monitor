@@ -20,7 +20,7 @@ from node_agent import validate_profile
 from portable_admin import provision_profile
 
 AGENT_MODULES = ('node_agent.py', 'portable_admin.py', 'admin_executor.py', 'dns_admin.py',
-                 'adguard_filters.py', 'sni_admin.py', 'router_admin_executor.py', 'history_diagnostics.py')
+                 'adguard_filters.py', 'sni_admin.py', 'router_admin_executor.py', 'history_diagnostics.py', 'endpoint_discovery.py')
 
 ROUTER_AGENT = '''#!/bin/sh
 case "$SSH_ORIGINAL_COMMAND" in status|check|extras) ;; *) exit 2 ;; esac
