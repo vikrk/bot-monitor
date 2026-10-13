@@ -203,7 +203,7 @@ def format_result(host,result):
     if result.get('bridge_error'):return host+': ошибка проверки; требуется журнал.'
     if 'report' in result:
         report=result['report'];services=report.get('services',{});bad=result.get('failures',[])
-        lines=[host+': свежая проверка', 'Службы: '+', '.join(k+(' ✅' if v else ' ❌') for k,v in services.items())]
+        lines=[host+(': последний статус' if result.get('saved_result') else ': свежая проверка'), 'Службы: '+', '.join(k+(' ✅' if v else ' ❌') for k,v in services.items())]
         for basic,value in report.get('basics',{}).items():
             extra=(' ('+str(value['free_mb'])+' МБ свободно)') if 'free_mb' in value else (' ('+str(value['cert_days_remaining'])+' дней до окончания TLS)') if 'cert_days_remaining' in value else ''
             lines.append(basic+': '+('✅' if value.get('ok') else '❌')+extra)
@@ -219,7 +219,6 @@ def format_result(host,result):
           '⚠️ Не прошли: '+', '.join(result.get('failures',[])) if result.get('failures') else '✅ Последние проверки прошли.',
           ('Ограниченное автоисправление включено; reboot не подключён.' if result.get('auto_repair_enabled') else 'Reboot и автоисправления для этого узла не подключены.' if result.get('read_only') else 'Автоперезагрузка: '+('⚠️ включена' if result.get('auto_reboot_enabled') else 'выключена.'))]
     checks=result.get('report',{}).get('relay_checks',{}) if 'report' in result else result.get('relay_checks',{})
-    lines.extend(result.get('report',{}).get('notes',[]))
     lines.extend(format_relay_checks(checks))
     lines.extend(format_cdn_tls_checks(result.get('report',{}).get('cdn_tls',{}) if 'report' in result else result.get('cdn_tls',{})))
     for label, outcome in result.get('report', {}).get('groups', {}).get('HTTP(S)', {}).items():

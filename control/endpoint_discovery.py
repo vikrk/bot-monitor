@@ -1,5 +1,6 @@
 """Read configured endpoints, returning no credentials, client lists or private keys."""
 import hashlib
+import glob
 from contextlib import closing
 import ipaddress
 import json
@@ -48,6 +49,21 @@ def server_blocks(text):
             if depth == 0:
                 yield text[start:end]
                 break
+
+
+def nginx_config(filename='/etc/nginx/nginx.conf', seen=None):
+    seen = set() if seen is None else seen
+    path = Path(filename)
+    if str(path) in seen or len(seen) >= 64 or not path.is_file(): return ''
+    seen.add(str(path))
+    if path.stat().st_size > 256 * 1024: return ''
+    text = re.sub(r'(?m)#.*$', '', path.read_text())
+    def include(match):
+        pattern = match[1].strip().strip('"\'')
+        if '$' in pattern: return ''
+        if not pattern.startswith('/'): pattern = '/etc/nginx/' + pattern
+        return '\n'.join(nginx_config(name, seen) for name in sorted(glob.glob(pattern))[:64])
+    return re.sub(r'\binclude\s+([^;]+);', include, text)
 
 
 def discover():
@@ -123,9 +139,7 @@ def discover():
 
     if Path('/usr/sbin/nginx').is_file():
         try:
-            output = subprocess.run(['/usr/sbin/nginx', '-T'], capture_output=True, text=True, timeout=8)
-            if output.returncode: raise ValueError('nginx config unavailable')
-            for index, block in enumerate(server_blocks(output.stdout[:2 * 1024 * 1024])):
+            for index, block in enumerate(server_blocks(nginx_config()[:2 * 1024 * 1024])):
                 names = re.search(r'\bserver_name\s+([^;]+);', block)
                 name = next((n for n in names[1].split() if domain(n)), None) if names else None
                 if not name: continue

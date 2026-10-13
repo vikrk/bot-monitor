@@ -78,7 +78,9 @@ def run(tc, mode):
                     if not fresh and not result.get('last_check'):
                         self.send(node['name'] + ': SSH доступен; плановая проверка ещё не выполнялась.')
                     else:
-                        if not fresh: self.send(node['name'] + ': сохранённый результат от ' + time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(result['last_check'])))
+                        if not fresh:
+                            result = dict(result, saved_result=True)
+                            self.send(node['name'] + ': сохранённый результат от ' + time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(result['last_check'])))
                         self.send(tc.format_result(node['name'], result))
                 except Exception:
                     self.send('⚠️ ' + fleet.label(identifier) + ': проверку получить не удалось. Проверьте SSH-доступ и профиль.')
