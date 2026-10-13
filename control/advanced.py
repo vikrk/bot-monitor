@@ -36,10 +36,13 @@ def journal(host,result,source='check'):
  STATE.mkdir(mode=0o700,parents=True,exist_ok=True)
  report=result.get('report',{});services=report.get('services',result.get('services',{}));bad=result.get('failures',[])
  sample={'t':time.time(),'h':host,'source':source,'last_check':result.get('last_check'),'failures':bad,'services':services,'skipped':result.get('skipped')}
+ for key in ('error','error_type','connection_error'):
+  if result.get(key):sample[key]=str(result[key])[:1000]
+ if report:sample['report']=report
  if source=='ping':sample.update({k:result.get(k) for k in ['sent','received','average_ms','error']})
  if source=='resources':sample['metrics']=result
  with (STATE/'history.lock').open('a+') as f:
-  fcntl.flock(f,fcntl.LOCK_EX);p=STATE/'history.jsonl';cut=time.time()-30*86400
+  fcntl.flock(f,fcntl.LOCK_EX);p=STATE/'history.jsonl';cut=time.time()-72*3600
   rows=[]
   if p.exists():
    for line in p.read_text().splitlines():

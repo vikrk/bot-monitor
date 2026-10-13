@@ -2,6 +2,7 @@
 """Dynamic inventory and bounded RPC for the installable control bot."""
 import json
 import base64
+import fcntl
 import os
 import re
 import subprocess
@@ -82,7 +83,7 @@ def rpc(identifier, action):
     if transport == 'ssh-shell':
         return shell_result(result.stdout, action)
     data = json.loads(result.stdout)
-    if not isinstance(data, dict) or data.get('error'):
+    if not isinstance(data, dict) or (data.get('error') and not data.get('last_check')):
         raise RuntimeError('Агент отклонил запрос')
     return data
 
@@ -122,7 +123,14 @@ def shell_result(text, action):
 
 
 def check(identifier):
-    result = rpc(identifier, 'check')
+    try:
+        result = rpc(identifier, 'check')
+    except Exception as exc:
+        result = {'last_check': time.time(), 'read_only': True, 'services': {},
+                  'failures': ['ssh-or-check-unavailable'], 'error_type': type(exc).__name__,
+                  'error': 'SSH/RPC check unavailable'}
+    if result.get('skipped'):
+        return result
     profile = nodes()[identifier].get('profile', {})
     routes = profile.get('dns_routes', [])
     results = result.get('dns_results', {})
@@ -152,16 +160,30 @@ def check(identifier):
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     destination = directory / (identifier + '.json')
     temporary = directory / (identifier + '.' + str(os.getpid()) + '.' + str(time.time_ns()) + '.tmp')
-    temporary.write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
-    temporary.chmod(0o600)
-    temporary.replace(destination)
+    with (directory / (identifier + '.lock')).open('a+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try: previous = json.loads(destination.read_text(encoding='utf-8'))
+        except (OSError, ValueError): previous = {}
+        if (result.get('last_check') or 0) >= (previous.get('last_check') or 0):
+            temporary.write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
+            temporary.chmod(0o600)
+            temporary.replace(destination)
     return result
 
 
 def status(identifier):
-    response = rpc(identifier, 'status')
+    try:
+        response = rpc(identifier, 'status')
+    except Exception:
+        response = {'last_check': None, 'failures': ['status-rpc-unavailable'],
+                    'connection_error': 'Current SSH/RPC status unavailable'}
     try:
         previous = json.loads((STATE / 'fleet-results' / (identifier + '.json')).read_text(encoding='utf-8'))
-        if previous.get('last_check', 0) > (response.get('last_check') or 0): return previous
+        if previous.get('last_check', 0) > (response.get('last_check') or 0):
+            if response.get('connection_error'):
+                previous['connection_error'] = response['connection_error']
+                previous.setdefault('report', {}).setdefault('notes', []).append(
+                    'Показана последняя завершённая проверка; текущий SSH/RPC недоступен.')
+            return previous
     except (OSError, ValueError): pass
     return response

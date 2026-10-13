@@ -24,12 +24,11 @@ def main():
   def check(h):
    if advanced.read(STATE/'maintenance-central.json').get(h,{}).get('until',0)>time.time():return h,{'skipped':'maintenance'}
    try:
-    if h in ['spb','nl']:
-     r=nodes.call(h,'status')
-     advanced.scheduled_record(None,h,r)
-     return h,{'failures':[] if not r.get('bridge_error') and 'last_check' in r else ['heartbeat-invalid-status'],'heartbeat_only':True}
     r=nodes.call(h,'check');advanced.scheduled_record(None,h,r);return h,r
-   except Exception:return h,{'failures':['ssh-or-check-unavailable']}
+   except Exception as exc:
+    result={'last_check':time.time(),'failures':['ssh-or-check-unavailable'],'error_type':type(exc).__name__,'error':'SSH/RPC check unavailable'}
+    advanced.scheduled_record(None,h,result)
+    return h,result
   summary={}
   with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
    for host,result in pool.map(check,tc.HOSTS):

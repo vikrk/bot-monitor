@@ -42,7 +42,7 @@ def register_main(name):
     data = fleet.load() if fleet.enabled() else {'version': 1, 'nodes': {}}
     if 'main' not in data['nodes']:
         services = []
-        for name_ in ('rvkomi-telegram-control', 'ssh', 'nginx', 'docker', 'x-ui', 'AdGuardHome'):
+        for name_ in ('rvkomi-telegram-control', 'ssh', 'nginx', 'docker', 'x-ui', 'xray', 'AdGuardHome'):
             probe = subprocess.run(['systemctl', 'show', '-p', 'LoadState', '--value', name_], capture_output=True, text=True)
             if probe.stdout.strip() == 'loaded': services.append(name_)
         profile = default_profile(services)
@@ -147,15 +147,15 @@ def public_ip():
     return str(address)
 
 
-def remote_exec(transport, text):
+def remote_exec(transport, text, allow_failure=False):
     channel = transport.open_session(timeout=10)
-    channel.settimeout(90)
+    channel.settimeout(300)
     channel.exec_command(text)
     out = channel.makefile('rb').read().decode('utf-8', 'replace')
     err = channel.makefile_stderr('rb').read().decode('utf-8', 'replace')
     code = channel.recv_exit_status()
     channel.close()
-    if code: raise RuntimeError('Удалённая команда подготовки не завершилась успешно: ' + err[-250:])
+    if code and not allow_failure: raise RuntimeError('Удалённая команда подготовки не завершилась успешно: ' + err[-250:])
     return out.strip()
 
 
@@ -196,7 +196,7 @@ def add_node(kind, existing=None):
         sftp = paramiko.SFTPClient.from_transport(transport)
         profile = old_node.get('profile', default_profile())
         if python:
-            discovered = remote_exec(transport, "for s in ssh nginx docker x-ui AdGuardHome; do [ \"$(systemctl show -p LoadState --value \"$s\" 2>/dev/null)\" = loaded ] && printf '%s\\n' \"$s\"; done; true")
+            discovered = remote_exec(transport, "for s in ssh nginx docker x-ui xray AdGuardHome; do [ \"$(systemctl show -p LoadState --value \"$s\" 2>/dev/null)\" = loaded ] && printf '%s\\n' \"$s\"; done; true")
             if not existing: profile['services'] = discovered.splitlines()
             print('Обнаруженные службы: ' + ', '.join(profile['services']))
             if input('Настроить проверки URL/TLS/DNS и разрешённые действия сейчас? [y/N]: ').strip().lower() == 'y':
@@ -206,6 +206,32 @@ def add_node(kind, existing=None):
             sftp.put(str(fleet.BASE / 'node_agent.py'), agent_path)
             with sftp.open(profile_path, 'w') as out: out.write(json.dumps(profile, ensure_ascii=False).encode('utf-8'))
             sftp.chmod(profile_path, 0o600)
+            logging_setup = {'configured': False, 'reason': 'router logging is configured separately'}
+            if kind == 'server':
+                if remote_exec(transport, 'id -u') == '0':
+                    # The authenticated setup session provisions logging before installing a restricted RPC key.
+                    logging_source = fleet.BASE / 'configure_logging.py'
+                    logging_remote = agent_dir + '/configure_logging.py'
+                    sftp.put(str(logging_source), logging_remote)
+                    sftp.chmod(logging_remote, 0o600)
+                    remote_exec(transport, 'command -v logrotate >/dev/null && ' + shlex.quote(python) +
+                        ' -c "import yaml" 2>/dev/null || { command -v apt-get >/dev/null && '
+                        'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq logrotate python3-yaml; }')
+                    remote_exec(transport, 'install -d -m 0755 /usr/local/lib/rvkomi-watchdog && install -m 0755 ' +
+                        shlex.quote(logging_remote) + ' /usr/local/lib/rvkomi-watchdog/configure_logging.py')
+                    configured = remote_exec(transport, shlex.quote(python) +
+                        ' /usr/local/lib/rvkomi-watchdog/configure_logging.py install --agent-dir ' + shlex.quote(agent_dir),
+                        allow_failure=True)
+                    logging_result = json.loads(configured)
+                    if logging_result.get('errors'):
+                        raise RuntimeError('Не удалось настроить журналы: ' + ', '.join(logging_result['errors']) +
+                            '. Причины: /var/lib/rvkomi-watchdog/diagnostic-logging-status.json на подключаемом сервере.')
+                    logging_setup = {'configured': True, 'result': logging_result}
+                    print('Журналы включены: journald/Xray/nginx 72h, AdGuard 6h; почасовая очистка активна.')
+                else:
+                    logging_setup = {'configured': False, 'reason': 'root is required for system diagnostic logging'}
+                    print('Системное журналирование не настроено: этот SSH-пользователь не root. '
+                          'Для полного подключения серверных журналов используйте root.')
             forced = shlex.quote(python) + ' ' + shlex.quote(agent_path) + ' --profile ' + shlex.quote(profile_path)
             mode = 'ssh-agent'
         else:
@@ -242,12 +268,15 @@ def add_node(kind, existing=None):
         sftp.chmod(home + '/.ssh', 0o700)
         node = {'name': name, 'kind': kind, 'address': host, 'user': user, 'port': port, 'key': str(private),
                 'known_hosts': str(known), 'fingerprint': fingerprint, 'source_ip': source,
-                'transport': mode, 'profile': profile}
+                'transport': mode, 'profile': profile,
+                'diagnostic_logging': logging_setup if python else {'configured': False, 'reason': 'POSIX router'}}
         data = fleet.load()
         data['nodes'][identifier] = node
         fleet.save(data)
         try:
             result = fleet.check(identifier)
+            if 'ssh-or-check-unavailable' in result.get('failures', []):
+                raise RuntimeError('Ключевой SSH/RPC-доступ не прошёл')
         except Exception:
             del data['nodes'][identifier]
             fleet.save(data)

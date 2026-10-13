@@ -5,7 +5,7 @@ if ! grep -qiE 'ubuntu|debian' /etc/os-release; then echo "Требуется Ub
 SOURCE_DIR="$(cd "$(dirname "$0")" && pwd)/control"
 BASE=/usr/local/lib/rvkomi-watchdog
 ROOT=/etc/rvkomi-watchdog
-for file in telegram-control.py fleet.py fleetctl.py node_agent.py generic_control.py; do
+for file in telegram-control.py fleet.py fleetctl.py node_agent.py generic_control.py configure_logging.py; do
     [ -f "$SOURCE_DIR/$file" ] || { echo "Не найден $SOURCE_DIR/$file" >&2; exit 1; }
 done
 echo "Будут установлены: Telegram-контрольный бот, локальный мониторинг, SSH-агент для подключаемых узлов и планировщики."
@@ -13,7 +13,7 @@ echo "Серверы, службы и маршруты настраиваютс�
 read -r -p "Название управляющего сервера [$(hostname -s)]: " MANAGER_NAME
 MANAGER_NAME=${MANAGER_NAME:-$(hostname -s)}
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-cryptography python3-paramiko openssh-client ca-certificates iputils-ping
+DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-cryptography python3-paramiko python3-yaml logrotate openssh-client ca-certificates iputils-ping
 if [ -d "$BASE" ]; then
     BACKUP_DIR="/var/backups/rvkomi-control/$(date -u +%Y%m%dT%H%M%SZ)"
     install -d -m 0700 "$BACKUP_DIR"
@@ -34,7 +34,10 @@ ln -sf "$BASE/verify_install.py" /usr/local/bin/rvkomi-control-verify
 ln -sf "$BASE/configure_monitor_interval.py" /usr/local/bin/rvkomi-monitor-interval
 ln -sf "$BASE/reauthorize_nodes.py" /usr/local/bin/rvkomi-control-authorize
 ln -sf "$BASE/configure_router_proxy.py" /usr/local/bin/rvkomi-router-proxy-setup
+ln -sf "$BASE/configure_logging.py" /usr/local/bin/rvkomi-logging-setup
 systemctl daemon-reload
+echo "Настройка журналов: journald/Xray/nginx — 72h, AdGuard — 6h."
+python3 "$BASE/configure_logging.py" install --agent-dir "$ROOT"
 HAD_FLEET=0
 [ ! -f "$ROOT/fleet.json" ] || HAD_FLEET=1
 fleetctl --init "$MANAGER_NAME"

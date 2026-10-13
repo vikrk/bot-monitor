@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """On-demand node probes. The SSH key can invoke only this bounded protocol."""
 import argparse
+import fcntl
 import base64
 import hashlib
 import concurrent.futures
@@ -14,6 +15,7 @@ import socket
 import ssl
 import struct
 import subprocess
+import tempfile
 import sys
 import time
 import urllib.request
@@ -254,6 +256,58 @@ def check(profile):
             'report': report, 'resources': metrics, 'dns_results': dns_results}
 
 
+def atomic_result(path, result):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            json.dump(result, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary): os.unlink(temporary)
+
+
+def completed_check(profile, profile_path, cache):
+    snapshot = profile_path.with_name('read-only-check.json')
+    with profile_path.with_name('check.lock').open('a+') as lock:
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: return {'skipped': 'running', 'read_only': True}
+        try:
+            result = check(profile)
+        except Exception as exc:
+            result = {'last_check': time.time(), 'read_only': True, 'services': {},
+                      'failures': ['check-exception'], 'error_type': type(exc).__name__,
+                      'error': 'The configured check could not complete'}
+        if result.get('skipped'): return result
+        result.setdefault('last_check', time.time())
+        atomic_result(snapshot, result)
+        if snapshot != cache: atomic_result(cache, result)
+        history = profile_path.with_name('read-only-check.jsonl')
+        cut = time.time() - 72 * 3600
+        rows = []
+        if history.exists():
+            for line in history.read_text().splitlines():
+                try:
+                    old = json.loads(line)
+                    if isinstance(old.get('last_check'), (int, float)) and old['last_check'] >= cut:
+                        rows.append(old)
+                except ValueError: pass
+        rows.append(result)
+        # Snapshots keep the entire last completed result; timestamped history expires at 72h.
+        fd, temporary = tempfile.mkstemp(prefix='.read-only-check.', dir=profile_path.parent)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                for row in rows[-5000:]: handle.write(json.dumps(row, ensure_ascii=False) + '\n')
+            os.replace(temporary, history)
+        finally:
+            if os.path.exists(temporary): os.unlink(temporary)
+        return result
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--profile', default=str(Path(__file__).with_name('profile.json')))
@@ -265,17 +319,16 @@ def main():
     action = words[0] if words else ''
     cache = Path(profile.get('state_path', str(profile_path.with_name('last-check.json'))))
     if words == ['status']:
-        try: result = json.loads(cache.read_text(encoding='utf-8'))
-        except (OSError, ValueError):
-            result = {'last_check': None, 'services': service_states(profile), 'failures': [], 'read_only': True}
+        candidates = []
+        for path in (cache, profile_path.with_name('read-only-check.json')):
+            try:
+                previous = json.loads(path.read_text(encoding='utf-8'))
+                if previous.get('last_check') and not previous.get('skipped'): candidates.append(previous)
+            except (OSError, ValueError): pass
+        result = max(candidates, key=lambda item: item['last_check']) if candidates else {
+            'last_check': None, 'services': service_states(profile), 'failures': [], 'read_only': True}
     elif words == ['check']:
-        result = check(profile)
-        try:
-            temporary = cache.with_suffix('.tmp')
-            temporary.write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
-            temporary.chmod(0o600)
-            temporary.replace(cache)
-        except OSError: pass
+        result = completed_check(profile, profile_path, cache)
     elif words == ['extras']:
         result = resources(profile)
     elif words == ['certs']:
@@ -291,6 +344,17 @@ def main():
         for name in profile.get('services', []):
             try: logs.append({'service': name, 'text': run(['journalctl', '--no-pager', '-n', '40', '-u', name], 8).stdout[-12000:]})
             except Exception: logs.append({'service': name, 'text': 'Journal unavailable'})
+        files = []
+        if {'x-ui', 'xray'} & set(profile.get('services', [])):
+            files += ['/var/log/xray/access.log', '/var/log/xray/error.log']
+        if 'xray' in profile.get('services', []):
+            files += ['/var/log/xray-standalone/access.log', '/var/log/xray-standalone/error.log']
+        if 'nginx' in profile.get('services', []):
+            files += ['/var/log/nginx/rvkomi-http.log', '/var/log/nginx/rvkomi-sni.log']
+        for filename in files:
+            if not Path(filename).is_file(): continue
+            try: logs.append({'service': filename, 'text': run(['tail', '-n', '40', filename], 8).stdout[-12000:]})
+            except Exception: logs.append({'service': filename, 'text': 'Diagnostic file unavailable'})
         result = {'logs': logs}
     elif len(words) == 2 and action == 'querylog' and re.fullmatch(r'[0-9a-f]{16}', words[1]):
         result = querylog(profile, words[1])

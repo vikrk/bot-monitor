@@ -54,6 +54,12 @@ def run(tc, mode):
                     node = fleet.nodes()[identifier]
                     result = fleet.check(identifier) if fresh else fleet.status(identifier)
                     if fresh: advanced.journal(identifier, result, 'check')
+                    if result.get('skipped'):
+                        self.send(node['name'] + ': проверка пропущена (' + str(result['skipped']) +
+                                  '); время последнего результата не изменено.')
+                        continue
+                    if result.get('connection_error'):
+                        self.send('⚠️ ' + node['name'] + ': текущий SSH/RPC недоступен; далее последний сохранённый результат.')
                     if not fresh and not result.get('last_check'):
                         self.send(node['name'] + ': SSH доступен; плановая проверка ещё не выполнялась.')
                     else:
@@ -224,11 +230,15 @@ def monitor(tc):
         path = fleet.STATE / 'generic-monitor-state.json'
         state = advanced.read(path, {'hosts': {}, 'queue': []})
         def one(identifier):
+            if advanced.read(fleet.STATE / 'maintenance-central.json').get(identifier, {}).get('until', 0) > time.time():
+                return identifier, {'skipped': 'maintenance'}
             try: return identifier, fleet.check(identifier)
             except Exception: return identifier, {'failures': ['ssh-or-check-unavailable'], 'last_check': time.time()}
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
             for identifier, result in pool.map(one, fleet.nodes()):
                 advanced.journal(identifier, result, 'scheduled')
+                if result.get('skipped'):
+                    continue
                 previous = state['hosts'].get(identifier, {})
                 failures = result.get('failures', ['invalid-result'])
                 count = previous.get('failed_count', 0) + 1 if failures else 0
@@ -237,7 +247,7 @@ def monitor(tc):
                     state['queue'].append('⚠️ ' + fleet.label(identifier) + ': 3 проверки подряд с ошибками: ' + ', '.join(signature))
                 elif not failures and previous.get('signature'):
                     state['queue'].append('✅ ' + fleet.label(identifier) + ': проверки восстановились.')
-                state['hosts'][identifier] = {'failed_count': count, 'signature': signature if failures else [], 'last_check': time.time()}
+                state['hosts'][identifier] = {'failed_count': count, 'signature': signature if failures else [], 'last_check': result.get('last_check')}
         credentials = json.loads((fleet.ROOT / 'telegram.json').read_text())
         api = tc.API(credentials)
         queue = state['queue'][-50:]
