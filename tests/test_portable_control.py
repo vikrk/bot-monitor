@@ -56,6 +56,37 @@ class PortableControlTests(unittest.TestCase):
         self.assertTrue((self.root / 'main-profile.json').is_file())
         self.assertFalse((self.root / 'control-nodes.json').exists())
 
+    def test_rescan_adds_panel_without_granting_restart_or_losing_routes(self):
+        data = fleet.load()
+        data['nodes']['main']['profile']['urls'] = [{'url': 'https://example.com', 'label': 'health', 'codes': [200]}]
+        fleet.save(data)
+        with patch.object(fleet, 'rpc', side_effect=[{'services': ['nginx', 'x-ui']}, {'configured': True}]) as rpc:
+            result = fleet.rescan('main')
+        self.assertEqual(result['added'], ['x-ui'])
+        updated = fleet.nodes()['main']['profile']
+        self.assertEqual(updated['allowed_restarts'], ['nginx'])
+        self.assertEqual(updated['urls'], data['nodes']['main']['profile']['urls'])
+        self.assertEqual(updated['services'], ['nginx', 'x-ui'])
+        with patch.object(fleet, 'rpc', return_value={'services': ['nginx', 'x-ui']}) as rpc:
+            self.assertEqual(fleet.rescan('main')['added'], [])
+            self.assertEqual(rpc.call_count, 1)
+
+    def test_failed_rescan_does_not_commit_profile(self):
+        original = fleet.load()
+        with patch.object(fleet, 'rpc', side_effect=[{'services': ['x-ui']}, RuntimeError('failed')]):
+            with self.assertRaises(RuntimeError): fleet.rescan('main')
+        self.assertEqual(fleet.load(), original)
+        with patch.object(fleet, 'rpc', return_value={'services': ['arbitrary-service']}):
+            with self.assertRaises(ValueError): fleet.rescan('main')
+        self.assertEqual(fleet.load(), original)
+
+    def test_discovery_includes_loaded_inactive_panel(self):
+        def probe(args, timeout):
+            return types.SimpleNamespace(returncode=0, stdout='loaded\n' if args[-1] == 'x-ui' else 'not-found\n')
+        with patch.object(node_agent, 'run', side_effect=probe):
+            self.assertEqual(node_agent.discover_services(), ['x-ui'])
+        self.assertFalse(fleet.allowed_action({'transport': 'ssh-shell'}, 'discover'))
+
     def test_disabled_node_does_not_appear_in_runtime_inventory(self):
         data = fleet.load()
         data['nodes']['new_host'] = {**data['nodes']['main'], 'enabled': False}

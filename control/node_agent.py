@@ -24,6 +24,18 @@ from urllib.parse import urlsplit
 from pathlib import Path
 
 
+DISCOVERY_SERVICES = ('rvkomi-telegram-control', 'ssh', 'nginx', 'docker', 'x-ui', '3x-ui', 'xray', 'AdGuardHome')
+
+
+def discover_services():
+    services = []
+    for service in DISCOVERY_SERVICES:
+        probe = run(['systemctl', 'show', '-p', 'LoadState', '--value', service], 8)
+        if probe.returncode == 0 and probe.stdout.strip() == 'loaded':
+            services.append(service)
+    return services
+
+
 def validate_profile(profile):
     if not isinstance(profile, dict): raise ValueError('Invalid profile')
     from portable_admin import validate_policy
@@ -350,6 +362,8 @@ def main():
         raw = sys.stdin.buffer.read(16001)
         if len(raw) > 16000: raise ValueError('Admin request too large')
         result = handle(json.loads(raw), profile, profile_path)
+    elif words == ['discover']:
+        result = {'services': discover_services()}
     elif words == ['status']:
         candidates = []
         for path in (cache, profile_path.with_name('read-only-check.json')):

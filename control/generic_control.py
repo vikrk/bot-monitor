@@ -13,11 +13,13 @@ import ai_admin
 import history_diagnostics
 
 COMMANDS = [('menu', 'Меню серверов'), ('status', 'Последние результаты'), ('check_all', 'Свежая проверка всех узлов'),
+            ('rescan', 'Обнаружить новые службы на Linux-узлах'),
             ('resources', 'Ресурсы всех узлов'), ('history', 'История проверок'), ('ai_all', 'ИИ-анализ всех узлов'),
             ('ai_change', 'План разрешённого изменения с подтверждением'),
             ('dns_sni_check', 'Проверить настроенные DNS и SNI-маршруты'), ('ping', 'PING подключённых узлов'),
             ('cancel', 'Отменить предложения перезапуска'), ('help', 'Настройка и команды')]
 HELP = ('/menu — подключённые узлы\n/status — последние результаты\n/check_all — свежие проверки\n'
+        '/rescan — добавить новые установленные службы в мониторинг\n'
         '/resources — ресурсы\n/history — история\n/ai_all — ИИ-диагностика\n/cancel — отмена предложений\n\n'
         'Добавление сервера, роутера и изменение профилей: sudo fleetctl на управляющем сервере. '
         'Проверяются только настроенные службы и маршруты. Перезапуск доступен только для служб из разрешённого списка '
@@ -49,6 +51,7 @@ def run(tc, mode):
             text += 'HTTP: ' + str(len(profile.get('urls', []))) + '; TLS: ' + str(len(profile.get('tls', []))) + '; DNS: ' + str(len(profile.get('dns_routes', [])))
             rows = [[{'text': '🔎 Проверить', 'callback_data': 'fleetcheck:' + identifier}]]
             if node['transport'] in ('local', 'ssh-agent'):
+                rows.append([{'text': '🔄 Пересканировать службы', 'callback_data': 'fleetrescan:' + identifier}])
                 rows.append([{'text': '📜 Журналы служб', 'callback_data': 'fleetlogs:' + identifier}])
                 for index, service in enumerate(profile.get('allowed_restarts', [])):
                     rows.append([{'text': 'Предложить перезапуск ' + service, 'callback_data': 'fleetrepair:' + identifier + ':' + str(index)}])
@@ -149,6 +152,18 @@ def run(tc, mode):
                 self.checks([proposal['node']])
             except Exception: self.send('Перезапуск не подтверждён. Проверьте статус и журнал перед повторным запросом.')
 
+        def rescan(self, identifiers):
+            for identifier in identifiers:
+                try:
+                    result = fleet.rescan(identifier)
+                    self.send(fleet.label(identifier) + ': добавлены службы — ' +
+                              (', '.join(result['added']) or 'новых служб нет') +
+                              '. Маршруты и разрешения на изменения сохранены.')
+                    self.checks([identifier])
+                except Exception:
+                    self.send(fleet.label(identifier) + ': пересканирование не завершено. '
+                              'Проверьте доступ; старый SSH-агент обновите переподключением через fleetctl.')
+
         def callback(self, query):
             if not tc.authorized_callback(query, self.owner): return
             kind, _, value = query.get('data', '').partition(':')
@@ -158,6 +173,9 @@ def run(tc, mode):
             try:
                 if kind == 'fleetmenu':
                     self.answer(query['id'], 'Принято'); self.handle_command(value, time.time())
+                elif kind == 'fleetrescan' and value in fleet.nodes():
+                    self.answer(query['id'], 'Пересканирование запрошено')
+                    self.executor.submit(self.rescan, [value])
                 elif kind in ('fleetnode', 'fleetcheck', 'fleetlogs') and value in fleet.nodes():
                     self.answer(query['id'], 'Принято')
                     if kind == 'fleetnode': self.node_menu(value)
@@ -193,6 +211,9 @@ def run(tc, mode):
             elif command == 'help': self.send(HELP)
             elif command == 'status': self.executor.submit(self.checks, list(fleet.nodes()), False)
             elif command == 'check_all': self.start_checks(list(fleet.nodes()))
+            elif command == 'rescan':
+                identifiers = [key for key, node in fleet.nodes().items() if node['transport'] in ('local', 'ssh-agent')]
+                self.executor.submit(self.rescan, identifiers)
             elif command == 'resources': self.executor.submit(self.resources)
             elif command == 'history': self.executor.submit(self.history)
             elif command == 'ai_change': ai_admin.begin(self)

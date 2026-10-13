@@ -52,6 +52,8 @@ def label(identifier):
 
 
 def allowed_action(node, action):
+    if action == 'discover':
+        return node.get('transport') in ('local', 'ssh-agent')
     if action == 'admin':
         return node.get('transport') in ('local', 'ssh-agent')
     if action in ACTIONS:
@@ -97,6 +99,33 @@ def rpc(identifier, action, payload=None):
     if not isinstance(data, dict) or (action != 'admin' and data.get('error') and not data.get('last_check')):
         raise RuntimeError('Агент отклонил запрос')
     return data
+
+
+def rescan(identifier):
+    """Add installed services without changing routes or administration permissions."""
+    from node_agent import validate_profile, DISCOVERY_SERVICES
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with (STATE / 'fleet-rescan.lock').open('a+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = load()
+        node = data['nodes'][identifier]
+        if not node.get('enabled', True) or node['transport'] not in ('local', 'ssh-agent'):
+            raise ValueError('Пересканирование доступно только для Linux-узлов с актуальным агентом')
+        discovered = rpc(identifier, 'discover').get('services')
+        if not isinstance(discovered, list) or any(s not in DISCOVERY_SERVICES for s in discovered):
+            raise ValueError('Неверный ответ обнаружения служб')
+        profile = json.loads(json.dumps(node.get('profile', {})))
+        old = profile.get('services', [])
+        added = [s for s in dict.fromkeys(discovered) if s not in old]
+        profile['services'] = old + added
+        validate_profile(profile)
+        if added:
+            encoded = base64.urlsafe_b64encode(json.dumps(profile).encode()).decode()
+            if not rpc(identifier, 'configure ' + encoded).get('configured'):
+                raise RuntimeError('Агент не сохранил профиль')
+            node['profile'] = profile
+            save(data)
+        return {'services': profile['services'], 'added': added}
 
 
 def shell_result(text, action):

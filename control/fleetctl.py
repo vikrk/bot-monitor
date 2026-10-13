@@ -412,7 +412,7 @@ def main():
     if not fleet.enabled(): register_main(input('Название управляющего сервера: ').strip())
     while True:
         print('\nRVKOMI — ' + fleet.load()['nodes'].get('main', {}).get('name', 'контроллер'))
-        print('1. Подключить сервер\n2. Подключить SSH-роутер\n3. Список узлов\n4. Настроить проверки и разрешённые действия узла\n5. Проверить все узлы\n6. Настроить Telegram-бота/администратора\n7. Интервал мониторинга\n8. Настроить ИИ\n9. Переименовать узел\n10. Отключить узел из мониторинга\n11. Статус службы\n12. Экспорт зашифрованной копии\n13. Восстановление копии\n14. Изменить IP/логин/порт и переподключить узел\n0. Выход')
+        print('1. Подключить сервер\n2. Подключить SSH-роутер\n3. Список узлов\n4. Настроить проверки и разрешённые действия узла\n5. Проверить все узлы\n6. Настроить Telegram-бота/администратора\n7. Интервал мониторинга\n8. Настроить ИИ\n9. Переименовать узел\n10. Отключить узел из мониторинга\n11. Статус службы\n12. Экспорт зашифрованной копии\n13. Восстановление копии\n14. Изменить IP/логин/порт и переподключить узел\n15. Пересканировать службы узла\n0. Выход')
         choice = input('Выбор: ').strip()
         try:
             if choice == '0': return
@@ -445,6 +445,9 @@ def main():
                 if not fleet.enabled() or not any(n.get('transport') == 'legacy' for n in fleet.load()['nodes'].values()):
                     if input('Добавить legacy-списки узлов из этой копии? [y/N]: ').lower() == 'y': adopt_legacy()
                 command(['systemctl', 'restart', 'rvkomi-telegram-control.service'])
+            elif choice == '15':
+                identifier = choose_node()
+                if identifier: print(json.dumps(fleet.rescan(identifier), ensure_ascii=False))
             elif choice == '14':
                 identifier = choose_node()
                 if identifier and identifier != 'main': add_node(fleet.nodes()[identifier]['kind'], identifier)

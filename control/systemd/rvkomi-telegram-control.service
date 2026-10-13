@@ -25,7 +25,7 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 NoNewPrivileges=true
-ReadWritePaths=/var/lib/rvkomi-watchdog /run/rvkomi-telegram-control /run/rvkomi-watchdog -/var/log/nginx
+ReadWritePaths=/etc/rvkomi-watchdog /var/lib/rvkomi-watchdog /run/rvkomi-telegram-control /run/rvkomi-watchdog -/var/log/nginx
 
 [Install]
 WantedBy=multi-user.target
