@@ -456,7 +456,7 @@ def retention():
             if stamp < cut:
                 path.unlink()
                 removed += 1
-    system_pattern = re.compile(r'(?:(?:goamnezia|gotelegram|godns).*\.log|syslog|auth\.log|kern\.log|daemon\.log|messages|debug|user\.log|cron\.log|mail(?:\.log|\.info|\.warn|\.err)|ufw\.log|fail2ban\.log)\.[0-9]+(?:\.gz)?$')
+    system_pattern = re.compile(r'(?:(?:goamnezia|godns).*\.log|syslog|auth\.log|kern\.log|daemon\.log|messages|debug|user\.log|cron\.log|mail(?:\.log|\.info|\.warn|\.err)|ufw\.log|fail2ban\.log)\.[0-9]+(?:\.gz)?$')
     for path in Path('/var/log').iterdir():
         if not path.is_symlink() and path.is_file() and system_pattern.fullmatch(path.name) and path.stat().st_mtime < cut:
             path.unlink()

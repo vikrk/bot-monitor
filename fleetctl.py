@@ -476,7 +476,7 @@ def main():
             print(f" {i:2}. {item}")
         choice = input("Выберите пункт: ").strip()
         if choice == "1":
-            print("Устанавливаются: Python runtime, служба Telegram-бота, локальная база узлов/журнала, SSH-клиент и отдельный Ed25519 ключ. Открытые входящие порты не требуются. Менеджер не меняет GoInstaller, GoTelegram, firewall или настройки MTProto.")
+            print("Устанавливаются: Python runtime, служба Telegram-бота, локальная база узлов/журнала, SSH-клиент и отдельный Ed25519 ключ. Открытые входящие порты не требуются. Менеджер не меняет firewall или настройки сторонних служб.")
         elif choice == "2": add_node("server")
         elif choice == "3": bot_wizard()
         elif choice == "4": set_interval()

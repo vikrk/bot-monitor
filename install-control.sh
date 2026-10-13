@@ -10,6 +10,7 @@ for file in telegram-control.py fleet.py fleetctl.py node_agent.py generic_contr
 done
 echo "Будут установлены: Telegram-контрольный бот, локальный мониторинг, SSH-агент для подключаемых узлов и планировщики."
 echo "Серверы, службы и маршруты настраиваются по вашим подключениям через fleetctl."
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/configure-mtu.sh"
 read -r -p "Название управляющего сервера [$(hostname -s)]: " MANAGER_NAME
 MANAGER_NAME=${MANAGER_NAME:-$(hostname -s)}
 apt-get update
