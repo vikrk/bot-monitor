@@ -32,6 +32,7 @@ def run(tc, mode):
         def menu(self):
             rows = [[{'text': '📊 Статус', 'callback_data': 'fleetmenu:status'},
                      {'text': '🔎 Проверить все', 'callback_data': 'fleetmenu:check_all'}],
+                    [{'text': '🔄 Пересканировать службы', 'callback_data': 'fleetmenu:rescan'}],
                     [{'text': '🧠 ИИ-анализ всех', 'callback_data': 'fleetmenu:ai_all'}]]
             rows.append([{'text': '🛠 ИИ: предложить изменение', 'callback_data': 'fleetmenu:ai_change'},
                          {'text': '🌐 DNS / SNI', 'callback_data': 'fleetmenu:dns_sni_check'}])
