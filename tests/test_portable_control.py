@@ -260,6 +260,25 @@ class PortableControlTests(unittest.TestCase):
         with patch.object(fleet, 'rpc', side_effect=RuntimeError('SSH down')):
             with self.assertRaises(RuntimeError): fleet.status('main')
 
+    def test_status_rpc_failure_without_cache_is_reported(self):
+        with patch.object(fleet, 'rpc', side_effect=RuntimeError('SSH down')):
+            with self.assertRaises(RuntimeError): fleet.status('main')
+
+    def test_status_uses_newest_check_only_after_successful_rpc(self):
+        folder = self.state / 'fleet-results'
+        folder.mkdir()
+        cached = {'last_check': 200, 'failures': ['dns']}
+        destination = folder / 'main.json'
+        destination.write_text(json.dumps(cached))
+        with patch.object(fleet, 'rpc', return_value={'last_check': 100, 'failures': []}):
+            self.assertEqual(fleet.status('main'), cached)
+        live = {'last_check': 300, 'failures': []}
+        with patch.object(fleet, 'rpc', return_value=live):
+            self.assertEqual(fleet.status('main'), live)
+        destination.write_text('invalid JSON')
+        with patch.object(fleet, 'rpc', return_value=live):
+            self.assertEqual(fleet.status('main'), live)
+
     def test_owner_message_and_single_use_confirmation(self):
         spec = importlib.util.spec_from_file_location('test_control', CONTROL / 'telegram-control.py')
         tc = importlib.util.module_from_spec(spec)
