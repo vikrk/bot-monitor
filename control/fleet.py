@@ -227,18 +227,11 @@ def check(identifier):
 
 
 def status(identifier):
-    try:
-        response = rpc(identifier, 'status')
-    except Exception:
-        response = {'last_check': None, 'failures': ['status-rpc-unavailable'],
-                    'connection_error': 'Current SSH/RPC status unavailable'}
+    # Cached checks supplement a reachable agent; they cannot prove connectivity.
+    response = rpc(identifier, 'status')
     try:
         previous = json.loads((STATE / 'fleet-results' / (identifier + '.json')).read_text(encoding='utf-8'))
         if previous.get('last_check', 0) > (response.get('last_check') or 0):
-            if response.get('connection_error'):
-                previous['connection_error'] = response['connection_error']
-                previous.setdefault('report', {}).setdefault('notes', []).append(
-                    'Показана последняя завершённая проверка; текущий SSH/RPC недоступен.')
             return previous
     except (OSError, ValueError): pass
     return response
